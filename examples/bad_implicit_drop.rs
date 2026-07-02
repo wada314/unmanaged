@@ -8,7 +8,7 @@ fn main() {
     let alloc = Global;
 
     let mut v = UnmanagedVec::<u32>::new();
-    v.push_in(1, &alloc);
+    v.with_alloc(&alloc).push(1);
 
     // No `deallocate` call: `v` goes out of scope here and its `Drop` impl
     // panics at runtime.

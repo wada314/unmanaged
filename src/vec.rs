@@ -1,31 +1,31 @@
 //! A growable array type that omits the allocator from its inline representation.
 
 use ::allocator_api2::alloc::Allocator;
-use ::core::alloc::Layout;
+use ::allocator_api2::vec::Vec;
 use ::core::marker::PhantomData;
-use ::core::mem;
+use ::core::mem::ManuallyDrop;
 use ::core::ops::Deref;
 use ::core::ops::DerefMut;
 use ::core::ptr::NonNull;
-use ::core::ptr;
 use ::core::slice;
 
 /// A contiguous growable array type that does not store its allocator.
 ///
 /// The inline size is three words (`ptr`, `len`, `cap`), identical to the
-/// standard [`Vec`](alloc::vec::Vec) *without* an allocator type parameter.
-/// Every operation that allocates, grows, or frees memory takes an explicit
-/// `&A` allocator argument. The caller is responsible for always passing the
-/// same allocator instance that was used to create the buffer.
+/// standard [`Vec`] *without* an allocator type parameter. The allocator is
+/// supplied only for the operations that need it:
 ///
-/// Immutable and mutable slice methods are available through [`Deref`] and
-/// [`DerefMut`] to `[T]`, so they are not reimplemented here.
+/// * Slice access (immutable and mutable) is available through [`Deref`] and
+///   [`DerefMut`] to `[T]`, which need no allocator.
+/// * Growing operations are performed through the full [`Vec`] API by
+///   borrowing the vector together with an allocator via
+///   [`UnmanagedVec::with_alloc`], which returns a [`VecGuard`].
+/// * Releasing the buffer is done with [`UnmanagedVec::deallocate`].
 ///
 /// # Dropping
 ///
-/// An `UnmanagedVec` cannot free itself, so it deliberately has no useful
-/// [`Drop`] behavior. Instead, release it with [`UnmanagedVec::deallocate`].
-/// Letting an `UnmanagedVec` be dropped implicitly panics at runtime.
+/// An `UnmanagedVec` cannot free itself, so dropping it implicitly panics at
+/// runtime. Always release it through [`UnmanagedVec::deallocate`].
 pub struct UnmanagedVec<T> {
     ptr: NonNull<T>,
     len: usize,
@@ -50,72 +50,40 @@ impl<T> UnmanagedVec<T> {
         self.cap
     }
 
-    /// Appends an element, growing the backing buffer through `alloc` if needed.
+    /// Borrows the vector together with `alloc`, yielding a guard that derefs to
+    /// a full [`Vec<T, A>`] so every growing `Vec` method is available.
     ///
-    /// `alloc` must be the same allocator used for any previous growth of this
-    /// vector.
-    pub fn push_in<A: Allocator>(&mut self, value: T, alloc: &A) {
-        if self.len == self.cap {
-            self.grow_in(alloc);
+    /// When the returned [`VecGuard`] is dropped, the (possibly reallocated)
+    /// pointer, length, and capacity are written back into `self`. `alloc` must
+    /// be the same allocator used for any previous growth of this vector.
+    pub fn with_alloc<A: Allocator>(&mut self, alloc: A) -> VecGuard<'_, T, A> {
+        // SAFETY: `ptr`/`len`/`cap` are either the empty (dangling, 0, 0) state
+        // produced by `new`, or a set of raw parts previously produced by a
+        // `Vec<T, A>` using the same allocator. Either is valid for
+        // `from_raw_parts_in`.
+        let vec = unsafe { Vec::from_raw_parts_in(self.ptr.as_ptr(), self.len, self.cap, alloc) };
+        VecGuard {
+            vec: ManuallyDrop::new(vec),
+            origin: self,
         }
-        // SAFETY: `len < cap` after the grow above, so the slot is in bounds and uninitialized.
-        unsafe {
-            ptr::write(self.ptr.as_ptr().add(self.len), value);
-        }
-        self.len += 1;
-    }
-
-    /// Removes and returns the last element, or `None` if empty.
-    pub fn pop(&mut self) -> Option<T> {
-        if self.len == 0 {
-            return None;
-        }
-        self.len -= 1;
-        // SAFETY: the element at `len` was initialized and is now logically removed.
-        Some(unsafe { ptr::read(self.ptr.as_ptr().add(self.len)) })
-    }
-
-    /// Doubles the capacity (or allocates the first slot) using `alloc`.
-    fn grow_in<A: Allocator>(&mut self, alloc: &A) {
-        let new_cap = if self.cap == 0 { 1 } else { self.cap * 2 };
-        let new_layout = Layout::array::<T>(new_cap).expect("capacity overflow");
-
-        let new_ptr = if self.cap == 0 {
-            alloc.allocate(new_layout)
-        } else {
-            let old_layout = Layout::array::<T>(self.cap).expect("capacity overflow");
-            // SAFETY: `ptr` was allocated by `alloc` with `old_layout` and `new_layout` is larger.
-            unsafe { alloc.grow(self.ptr.cast(), old_layout, new_layout) }
-        }
-        .expect("allocation failed");
-
-        self.ptr = new_ptr.cast();
-        self.cap = new_cap;
     }
 
     /// Drops all elements and frees the backing buffer through `alloc`.
     ///
     /// This consumes `self`, which is the only supported way to release an
     /// `UnmanagedVec`. `alloc` must be the same allocator used to grow it.
-    pub fn deallocate<A: Allocator>(self, alloc: &A) {
-        // Copy out the raw parts (all `Copy`) and forget `self` *before* any
-        // fallible work, so no drop obligation for `self` remains on any path.
-        let ptr = self.ptr;
+    pub fn deallocate<A: Allocator>(self, alloc: A) {
+        // Copy out the raw parts (all `Copy`) and forget `self` *before*
+        // building the `Vec`, so no drop obligation for `self` remains.
+        let ptr = self.ptr.as_ptr();
         let len = self.len;
         let cap = self.cap;
-        mem::forget(self);
+        ::core::mem::forget(self);
 
-        // SAFETY: the first `len` elements are initialized; drop them in place.
-        unsafe {
-            ptr::drop_in_place(slice::from_raw_parts_mut(ptr.as_ptr(), len));
-        }
-        if cap != 0 {
-            let layout = Layout::array::<T>(cap).expect("capacity overflow");
-            // SAFETY: `ptr` was allocated by `alloc` with this layout.
-            unsafe {
-                alloc.deallocate(ptr.cast(), layout);
-            }
-        }
+        // Reconstitute a real `Vec` and let it drop: this drops the elements and
+        // frees the buffer, correctly handling zero capacity and ZSTs.
+        // SAFETY: same invariants as `with_alloc`.
+        let _ = unsafe { Vec::from_raw_parts_in(ptr, len, cap, alloc) };
     }
 }
 
@@ -145,24 +113,76 @@ impl<T> Drop for UnmanagedVec<T> {
     }
 }
 
+/// A temporary handle that grants the full [`Vec<T, A>`] API over an
+/// [`UnmanagedVec`] by pairing it with an allocator for the duration of a
+/// borrow.
+///
+/// Obtain one via [`UnmanagedVec::with_alloc`]. On drop, the current raw parts
+/// of the underlying `Vec` are written back into the originating
+/// `UnmanagedVec`; the buffer itself is **not** freed.
+pub struct VecGuard<'a, T, A: Allocator> {
+    vec: ManuallyDrop<Vec<T, A>>,
+    origin: &'a mut UnmanagedVec<T>,
+}
+
+impl<'a, T, A: Allocator> Deref for VecGuard<'a, T, A> {
+    type Target = Vec<T, A>;
+
+    fn deref(&self) -> &Vec<T, A> {
+        &self.vec
+    }
+}
+
+impl<'a, T, A: Allocator> DerefMut for VecGuard<'a, T, A> {
+    fn deref_mut(&mut self) -> &mut Vec<T, A> {
+        &mut self.vec
+    }
+}
+
+impl<'a, T, A: Allocator> Drop for VecGuard<'a, T, A> {
+    fn drop(&mut self) {
+        // SAFETY: `self.vec` is never used again after this take.
+        let vec = unsafe { ManuallyDrop::take(&mut self.vec) };
+        // Decompose without freeing, then write the current parts back into the
+        // origin. The allocator is returned by value and dropped here; the
+        // buffer stays alive and is owned by the origin again.
+        let (ptr, len, cap, _alloc) = vec.into_raw_parts_with_alloc();
+        self.origin.ptr = unsafe { NonNull::new_unchecked(ptr) };
+        self.origin.len = len;
+        self.origin.cap = cap;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::UnmanagedVec;
+    use ::alloc::string::String;
     use ::allocator_api2::alloc::Global;
 
     #[test]
-    fn allocate_use_and_deallocate() {
+    fn grow_via_guard_then_deallocate() {
         let alloc = Global;
         let mut v = UnmanagedVec::<u32>::new();
-        for i in 0..8 {
-            v.push_in(i, &alloc);
+        {
+            let mut g = v.with_alloc(&alloc);
+            // Full `Vec` API is available through the guard.
+            g.push(1);
+            g.push(2);
+            g.extend([3, 4, 5]);
+            assert_eq!(g.len(), 5);
+            assert_eq!(g.pop(), Some(5));
         }
-        // `len`, `is_empty`, indexing, iteration all come from the `[T]` deref.
-        assert_eq!(v.len(), 8);
-        assert!(!v.is_empty());
-        assert_eq!(&v[..], &[0, 1, 2, 3, 4, 5, 6, 7]);
-        assert_eq!(v.iter().sum::<u32>(), 28);
-        assert_eq!(v.pop(), Some(7));
+        // Parts were written back to `v`; slice access works without a guard.
+        assert_eq!(v.len(), 4);
+        assert_eq!(&v[..], &[1, 2, 3, 4]);
+        assert_eq!(v.iter().sum::<u32>(), 10);
+        v.deallocate(&alloc);
+    }
+
+    #[test]
+    fn empty_vec_deallocates() {
+        let alloc = Global;
+        let v = UnmanagedVec::<String>::new();
         v.deallocate(&alloc);
     }
 
@@ -171,7 +191,7 @@ mod tests {
     fn implicit_drop_panics() {
         let alloc = Global;
         let mut v = UnmanagedVec::<u32>::new();
-        v.push_in(1, &alloc);
-        // Dropped implicitly at end of scope -> panics.
+        v.with_alloc(&alloc).push(1);
+        // `v` dropped implicitly at end of scope -> panics.
     }
 }
