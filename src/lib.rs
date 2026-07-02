@@ -12,9 +12,11 @@
 
 extern crate alloc;
 
+pub mod boxed;
 pub mod string;
 pub mod vec;
 
+pub use crate::boxed::UnmanagedBox;
 pub use crate::string::String;
 pub use crate::string::UnmanagedString;
 pub use crate::vec::UnmanagedVec;
