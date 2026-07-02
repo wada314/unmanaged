@@ -161,10 +161,9 @@ mod tests {
 
     #[test]
     fn grow_via_guard_then_deallocate() {
-        let alloc = Global;
         let mut v = UnmanagedVec::<u32>::new();
         {
-            let mut g = v.with_alloc(&alloc);
+            let mut g = v.with_alloc(Global);
             // Full `Vec` API is available through the guard.
             g.push(1);
             g.push(2);
@@ -176,22 +175,20 @@ mod tests {
         assert_eq!(v.len(), 4);
         assert_eq!(&v[..], &[1, 2, 3, 4]);
         assert_eq!(v.iter().sum::<u32>(), 10);
-        v.deallocate(&alloc);
+        v.deallocate(Global);
     }
 
     #[test]
     fn empty_vec_deallocates() {
-        let alloc = Global;
         let v = UnmanagedVec::<String>::new();
-        v.deallocate(&alloc);
+        v.deallocate(Global);
     }
 
     #[test]
     #[should_panic(expected = "must be released via `deallocate`")]
     fn implicit_drop_panics() {
-        let alloc = Global;
         let mut v = UnmanagedVec::<u32>::new();
-        v.with_alloc(&alloc).push(1);
+        v.with_alloc(Global).push(1);
         // `v` dropped implicitly at end of scope -> panics.
     }
 }
