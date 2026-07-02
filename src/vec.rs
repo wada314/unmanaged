@@ -65,13 +65,37 @@ impl<T> UnmanagedVec<T> {
         self.cap
     }
 
+    /// Returns the raw parts (data pointer, length, capacity) of the vector.
+    pub(crate) fn as_raw_parts(&self) -> (*mut T, usize, usize) {
+        (self.ptr.as_ptr(), self.len, self.cap)
+    }
+
+    /// Overwrites the raw parts of the vector.
+    ///
+    /// # Safety
+    ///
+    /// The parts must describe a valid buffer owned by this vector (typically
+    /// obtained by decomposing a `Vec<T, A>` built from its previous parts).
+    pub(crate) unsafe fn set_raw_parts(&mut self, ptr: *mut T, len: usize, cap: usize) {
+        // SAFETY: `Vec` never yields a null data pointer.
+        self.ptr = unsafe { NonNull::new_unchecked(ptr) };
+        self.len = len;
+        self.cap = cap;
+    }
+
     /// Borrows the vector together with `alloc`, yielding a guard that derefs to
     /// a full [`Vec<T, A>`] so every growing `Vec` method is available.
     ///
     /// When the returned [`VecGuard`] is dropped, the (possibly reallocated)
-    /// pointer, length, and capacity are written back into `self`. `alloc` must
-    /// be the same allocator used for any previous growth of this vector.
-    pub fn with_alloc<A: Allocator>(&mut self, alloc: A) -> VecGuard<'_, T, A> {
+    /// pointer, length, and capacity are written back into `self`.
+    ///
+    /// # Safety
+    ///
+    /// `alloc` must be the same allocator instance (or an equivalent one that
+    /// shares the same allocated blocks) that was used for any previous growth
+    /// of this vector. Passing a different allocator lets the returned `Vec`
+    /// grow or free a buffer that it does not own, which is undefined behavior.
+    pub unsafe fn with_alloc<A: Allocator>(&mut self, alloc: A) -> VecGuard<'_, T, A> {
         // SAFETY: `ptr`/`len`/`cap` are either the empty (dangling, 0, 0) state
         // produced by `new`, or a set of raw parts previously produced by a
         // `Vec<T, A>` using the same allocator. Either is valid for
@@ -86,8 +110,14 @@ impl<T> UnmanagedVec<T> {
     /// Drops all elements and frees the backing buffer through `alloc`.
     ///
     /// This consumes `self`, which is the only supported way to release an
-    /// `UnmanagedVec`. `alloc` must be the same allocator used to grow it.
-    pub fn deallocate<A: Allocator>(self, alloc: A) {
+    /// `UnmanagedVec`.
+    ///
+    /// # Safety
+    ///
+    /// `alloc` must be the same allocator instance (or an equivalent one that
+    /// shares the same allocated blocks) that was used to grow this vector.
+    /// Freeing with a different allocator is undefined behavior.
+    pub unsafe fn deallocate<A: Allocator>(self, alloc: A) {
         // Copy out the raw parts (all `Copy`) and forget `self` *before*
         // building the `Vec`, so no drop obligation for `self` remains.
         let ptr = self.ptr.as_ptr();
@@ -162,9 +192,8 @@ impl<'a, T, A: Allocator> Drop for VecGuard<'a, T, A> {
         // origin. The allocator is returned by value and dropped here; the
         // buffer stays alive and is owned by the origin again.
         let (ptr, len, cap, _alloc) = vec.into_raw_parts_with_alloc();
-        self.origin.ptr = unsafe { NonNull::new_unchecked(ptr) };
-        self.origin.len = len;
-        self.origin.cap = cap;
+        // SAFETY: parts came from a `Vec` built from the origin's own parts.
+        unsafe { self.origin.set_raw_parts(ptr, len, cap) };
     }
 }
 
@@ -178,7 +207,8 @@ mod tests {
     fn grow_via_guard_then_deallocate() {
         let mut v = UnmanagedVec::<u32>::new(Global);
         {
-            let mut g = v.with_alloc(Global);
+            // SAFETY: `Global` is the same (stateless) allocator throughout.
+            let mut g = unsafe { v.with_alloc(Global) };
             // Full `Vec` API is available through the guard.
             g.push(1);
             g.push(2);
@@ -190,13 +220,15 @@ mod tests {
         assert_eq!(v.len(), 4);
         assert_eq!(&v[..], &[1, 2, 3, 4]);
         assert_eq!(v.iter().sum::<u32>(), 10);
-        v.deallocate(Global);
+        // SAFETY: same allocator as used for growth.
+        unsafe { v.deallocate(Global) };
     }
 
     #[test]
     fn empty_vec_deallocates() {
         let v = UnmanagedVec::<String>::new(Global);
-        v.deallocate(Global);
+        // SAFETY: never grown; `Global` matches the empty allocation state.
+        unsafe { v.deallocate(Global) };
     }
 
     #[test]
@@ -205,14 +237,16 @@ mod tests {
         vec.extend([10, 20, 30]);
         let v = UnmanagedVec::from_vec(vec);
         assert_eq!(&v[..], &[10, 20, 30]);
-        v.deallocate(Global);
+        // SAFETY: `vec` was built with `Global`, so `Global` is correct here.
+        unsafe { v.deallocate(Global) };
     }
 
     #[test]
     #[should_panic(expected = "must be released via `deallocate`")]
     fn implicit_drop_panics() {
         let mut v = UnmanagedVec::<u32>::new(Global);
-        v.with_alloc(Global).push(1);
+        // SAFETY: `Global` is consistent.
+        unsafe { v.with_alloc(Global) }.push(1);
         // `v` dropped implicitly at end of scope -> panics.
     }
 }

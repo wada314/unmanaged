@@ -47,7 +47,8 @@ fn main() {
     {
         // The guard derefs to a full `Vec<u32, &CountingAllocator>`: the
         // allocator is only *borrowed*, never cloned or copied.
-        let mut g = v.with_alloc(&alloc);
+        // SAFETY: `&alloc` refers to the same allocator throughout this program.
+        let mut g = unsafe { v.with_alloc(&alloc) };
         for i in 0..5 {
             g.push(i);
         }
@@ -58,7 +59,8 @@ fn main() {
     assert_eq!(&v[..], &[0, 1, 2, 3, 4, 5, 6, 7]);
 
     // Release through the same borrowed allocator.
-    v.deallocate(&alloc);
+    // SAFETY: same allocator instance used for all growth above.
+    unsafe { v.deallocate(&alloc) };
 
     println!(
         "ok: grew via guard and deallocated; allocator ran {} allocation(s)",
