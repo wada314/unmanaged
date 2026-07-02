@@ -43,7 +43,7 @@ fn main() {
     // A single, move-only allocator instance.
     let alloc = CountingAllocator::new();
 
-    let mut v = UnmanagedVec::<u32>::new();
+    let mut v = UnmanagedVec::<u32>::new(&alloc);
     {
         // The guard derefs to a full `Vec<u32, &CountingAllocator>`: the
         // allocator is only *borrowed*, never cloned or copied.

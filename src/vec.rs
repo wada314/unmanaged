@@ -34,13 +34,28 @@ pub struct UnmanagedVec<T> {
 }
 
 impl<T> UnmanagedVec<T> {
-    /// Creates a new, empty `UnmanagedVec`. This does not allocate.
+    /// Creates a new, empty `UnmanagedVec` using `alloc`.
+    ///
+    /// The empty representation is obtained by decomposing a real
+    /// [`Vec::new_in`], rather than assuming a particular set of raw-part
+    /// values. `Vec::new_in` does not allocate, so passing `&alloc` keeps a
+    /// move-only allocator intact for later use.
     #[must_use = "an UnmanagedVec must be released via `deallocate`; dropping it panics"]
-    pub const fn new() -> Self {
+    pub fn new<A: Allocator>(alloc: A) -> Self {
+        Self::from_vec(Vec::new_in(alloc))
+    }
+
+    /// Decomposes an existing [`Vec`] into the allocator-less representation.
+    ///
+    /// The allocator carried by `vec` is returned by value and dropped; the
+    /// backing buffer (if any) is transferred into the returned `UnmanagedVec`.
+    pub fn from_vec<A: Allocator>(vec: Vec<T, A>) -> Self {
+        let (ptr, len, cap, _alloc) = vec.into_raw_parts_with_alloc();
         Self {
-            ptr: NonNull::dangling(),
-            len: 0,
-            cap: 0,
+            // SAFETY: `Vec` never yields a null data pointer.
+            ptr: unsafe { NonNull::new_unchecked(ptr) },
+            len,
+            cap,
             _marker: PhantomData,
         }
     }
@@ -161,7 +176,7 @@ mod tests {
 
     #[test]
     fn grow_via_guard_then_deallocate() {
-        let mut v = UnmanagedVec::<u32>::new();
+        let mut v = UnmanagedVec::<u32>::new(Global);
         {
             let mut g = v.with_alloc(Global);
             // Full `Vec` API is available through the guard.
@@ -180,14 +195,23 @@ mod tests {
 
     #[test]
     fn empty_vec_deallocates() {
-        let v = UnmanagedVec::<String>::new();
+        let v = UnmanagedVec::<String>::new(Global);
+        v.deallocate(Global);
+    }
+
+    #[test]
+    fn from_vec_roundtrip() {
+        let mut vec = ::allocator_api2::vec::Vec::<u32, Global>::new_in(Global);
+        vec.extend([10, 20, 30]);
+        let v = UnmanagedVec::from_vec(vec);
+        assert_eq!(&v[..], &[10, 20, 30]);
         v.deallocate(Global);
     }
 
     #[test]
     #[should_panic(expected = "must be released via `deallocate`")]
     fn implicit_drop_panics() {
-        let mut v = UnmanagedVec::<u32>::new();
+        let mut v = UnmanagedVec::<u32>::new(Global);
         v.with_alloc(Global).push(1);
         // `v` dropped implicitly at end of scope -> panics.
     }

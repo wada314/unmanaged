@@ -40,7 +40,7 @@ unsafe impl Allocator for CountingAllocator {
 fn main() {
     let alloc = CountingAllocator::new();
 
-    let mut v = UnmanagedVec::<u32>::new();
+    let mut v = UnmanagedVec::<u32>::new(&alloc);
     v.with_alloc(&alloc).push(1);
 
     // No `deallocate` call: `v` goes out of scope here and its `Drop` impl
