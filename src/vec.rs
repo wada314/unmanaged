@@ -1,4 +1,5 @@
-//! A growable array type that omits the allocator from its inline representation.
+//! A growable array type that omits the allocator *instance* from its inline
+//! representation, while retaining the allocator *type* as a type parameter.
 
 use ::allocator_api2::alloc::Allocator;
 use ::allocator_api2::vec::Vec;
@@ -9,47 +10,41 @@ use ::core::ops::DerefMut;
 use ::core::ptr::NonNull;
 use ::core::slice;
 
-/// A contiguous growable array type that does not store its allocator.
+/// A contiguous growable array that does not store an allocator instance.
 ///
-/// The inline size is three words (`ptr`, `len`, `cap`), identical to the
-/// standard [`Vec`] *without* an allocator type parameter. The allocator is
-/// supplied only for the operations that need it:
+/// The inline size is three words (`ptr`, `len`, `cap`) plus [`PhantomData<A>`]
+/// (ZST). The allocator type `A` is recorded so growth and free APIs are
+/// type-checked; the instance is supplied only for operations that need it:
 ///
-/// * Slice access (immutable and mutable) is available through [`Deref`] and
-///   [`DerefMut`] to `[T]`, which need no allocator.
-/// * Growing operations are performed through the full [`Vec`] API by
-///   borrowing the vector together with an allocator via
-///   [`UnmanagedVec::with_alloc`], which returns a [`VecGuard`].
-/// * Releasing the buffer is done with [`UnmanagedVec::deallocate`].
+/// * Slice access via [`Deref`] / [`DerefMut`] to `[T]` needs no allocator.
+/// * Growth via [`UnmanagedVec::with_alloc`] → [`VecGuard`].
+/// * Release via [`UnmanagedVec::deallocate`].
 ///
 /// # Dropping
 ///
-/// An `UnmanagedVec` cannot free itself, so dropping it implicitly panics at
-/// runtime. Always release it through [`UnmanagedVec::deallocate`].
-pub struct UnmanagedVec<T> {
+/// Dropping implicitly panics. Always release through [`deallocate`](Self::deallocate).
+pub struct UnmanagedVec<T, A: Allocator> {
     ptr: NonNull<T>,
     len: usize,
     cap: usize,
     _marker: PhantomData<T>,
+    _alloc: PhantomData<A>,
 }
 
-impl<T> UnmanagedVec<T> {
+impl<T, A: Allocator> UnmanagedVec<T, A> {
     /// Creates a new, empty `UnmanagedVec` using `alloc`.
     ///
-    /// The empty representation is obtained by decomposing a real
-    /// [`Vec::new_in`], rather than assuming a particular set of raw-part
-    /// values. `Vec::new_in` does not allocate, so passing `&alloc` keeps a
-    /// move-only allocator intact for later use.
+    /// `Vec::new_in` does not allocate, so passing `&alloc` keeps a move-only
+    /// allocator intact for later use.
     #[must_use = "an UnmanagedVec must be released via `deallocate`; dropping it panics"]
-    pub fn new<A: Allocator>(alloc: A) -> Self {
+    pub fn new(alloc: A) -> Self {
         Self::from_vec(Vec::new_in(alloc))
     }
 
-    /// Decomposes an existing [`Vec`] into the allocator-less representation.
+    /// Decomposes an existing [`Vec`] into the instance-less representation.
     ///
-    /// The allocator carried by `vec` is returned by value and dropped; the
-    /// backing buffer (if any) is transferred into the returned `UnmanagedVec`.
-    pub fn from_vec<A: Allocator>(vec: Vec<T, A>) -> Self {
+    /// The allocator carried by `vec` is dropped; the buffer is transferred.
+    pub fn from_vec(vec: Vec<T, A>) -> Self {
         let (ptr, len, cap, _alloc) = vec.into_raw_parts_with_alloc();
         Self {
             // SAFETY: `Vec` never yields a null data pointer.
@@ -57,6 +52,7 @@ impl<T> UnmanagedVec<T> {
             len,
             cap,
             _marker: PhantomData,
+            _alloc: PhantomData,
         }
     }
 
@@ -74,8 +70,7 @@ impl<T> UnmanagedVec<T> {
     ///
     /// # Safety
     ///
-    /// The parts must describe a valid buffer owned by this vector (typically
-    /// obtained by decomposing a `Vec<T, A>` built from its previous parts).
+    /// The parts must describe a valid buffer owned by this vector.
     pub(crate) unsafe fn set_raw_parts(&mut self, ptr: *mut T, len: usize, cap: usize) {
         // SAFETY: `Vec` never yields a null data pointer.
         self.ptr = unsafe { NonNull::new_unchecked(ptr) };
@@ -83,23 +78,12 @@ impl<T> UnmanagedVec<T> {
         self.cap = cap;
     }
 
-    /// Borrows the vector together with `alloc`, yielding a guard that derefs to
-    /// a full [`Vec<T, A>`] so every growing `Vec` method is available.
-    ///
-    /// When the returned [`VecGuard`] is dropped, the (possibly reallocated)
-    /// pointer, length, and capacity are written back into `self`.
+    /// Borrows the vector together with `alloc`, yielding a [`VecGuard`].
     ///
     /// # Safety
     ///
-    /// `alloc` must be the same allocator instance (or an equivalent one that
-    /// shares the same allocated blocks) that was used for any previous growth
-    /// of this vector. Passing a different allocator lets the returned `Vec`
-    /// grow or free a buffer that it does not own, which is undefined behavior.
-    pub unsafe fn with_alloc<A: Allocator>(&mut self, alloc: A) -> VecGuard<'_, T, A> {
-        // SAFETY: `ptr`/`len`/`cap` are either the empty (dangling, 0, 0) state
-        // produced by `new`, or a set of raw parts previously produced by a
-        // `Vec<T, A>` using the same allocator. Either is valid for
-        // `from_raw_parts_in`.
+    /// `alloc` must be interchangeable with the allocator that owns this buffer.
+    pub unsafe fn with_alloc(&mut self, alloc: A) -> VecGuard<'_, T, A> {
         let vec = unsafe { Vec::from_raw_parts_in(self.ptr.as_ptr(), self.len, self.cap, alloc) };
         VecGuard {
             vec: ManuallyDrop::new(vec),
@@ -109,30 +93,19 @@ impl<T> UnmanagedVec<T> {
 
     /// Drops all elements and frees the backing buffer through `alloc`.
     ///
-    /// This consumes `self`, which is the only supported way to release an
-    /// `UnmanagedVec`.
-    ///
     /// # Safety
     ///
-    /// `alloc` must be the same allocator instance (or an equivalent one that
-    /// shares the same allocated blocks) that was used to grow this vector.
-    /// Freeing with a different allocator is undefined behavior.
-    pub unsafe fn deallocate<A: Allocator>(self, alloc: A) {
-        // Copy out the raw parts (all `Copy`) and forget `self` *before*
-        // building the `Vec`, so no drop obligation for `self` remains.
+    /// `alloc` must be interchangeable with the allocator that owns this buffer.
+    pub unsafe fn deallocate(self, alloc: A) {
         let ptr = self.ptr.as_ptr();
         let len = self.len;
         let cap = self.cap;
         ::core::mem::forget(self);
-
-        // Reconstitute a real `Vec` and let it drop: this drops the elements and
-        // frees the buffer, correctly handling zero capacity and ZSTs.
-        // SAFETY: same invariants as `with_alloc`.
         let _ = unsafe { Vec::from_raw_parts_in(ptr, len, cap, alloc) };
     }
 }
 
-impl<T> Deref for UnmanagedVec<T> {
+impl<T, A: Allocator> Deref for UnmanagedVec<T, A> {
     type Target = [T];
 
     fn deref(&self) -> &[T] {
@@ -141,33 +114,23 @@ impl<T> Deref for UnmanagedVec<T> {
     }
 }
 
-impl<T> DerefMut for UnmanagedVec<T> {
+impl<T, A: Allocator> DerefMut for UnmanagedVec<T, A> {
     fn deref_mut(&mut self) -> &mut [T] {
         // SAFETY: `ptr` is valid for `len` initialized elements and we hold `&mut self`.
         unsafe { slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
     }
 }
 
-impl<T> Drop for UnmanagedVec<T> {
+impl<T, A: Allocator> Drop for UnmanagedVec<T, A> {
     fn drop(&mut self) {
-        // An `UnmanagedVec` has no allocator, so it cannot free itself here.
-        // Reaching this point means the value was dropped implicitly instead of
-        // being released via `deallocate`, which would leak the backing buffer.
-        // Fail loudly at runtime rather than silently leaking.
         panic!("UnmanagedVec must be released via `deallocate`, not dropped implicitly");
     }
 }
 
-/// A temporary handle that grants the full [`Vec<T, A>`] API over an
-/// [`UnmanagedVec`] by pairing it with an allocator for the duration of a
-/// borrow.
-///
-/// Obtain one via [`UnmanagedVec::with_alloc`]. On drop, the current raw parts
-/// of the underlying `Vec` are written back into the originating
-/// `UnmanagedVec`; the buffer itself is **not** freed.
+/// Temporary full [`Vec<T, A>`] API over an [`UnmanagedVec`].
 pub struct VecGuard<'a, T, A: Allocator> {
     vec: ManuallyDrop<Vec<T, A>>,
-    origin: &'a mut UnmanagedVec<T>,
+    origin: &'a mut UnmanagedVec<T, A>,
 }
 
 impl<'a, T, A: Allocator> Deref for VecGuard<'a, T, A> {
@@ -186,13 +149,8 @@ impl<'a, T, A: Allocator> DerefMut for VecGuard<'a, T, A> {
 
 impl<'a, T, A: Allocator> Drop for VecGuard<'a, T, A> {
     fn drop(&mut self) {
-        // SAFETY: `self.vec` is never used again after this take.
         let vec = unsafe { ManuallyDrop::take(&mut self.vec) };
-        // Decompose without freeing, then write the current parts back into the
-        // origin. The allocator is returned by value and dropped here; the
-        // buffer stays alive and is owned by the origin again.
         let (ptr, len, cap, _alloc) = vec.into_raw_parts_with_alloc();
-        // SAFETY: parts came from a `Vec` built from the origin's own parts.
         unsafe { self.origin.set_raw_parts(ptr, len, cap) };
     }
 }
@@ -205,29 +163,24 @@ mod tests {
 
     #[test]
     fn grow_via_guard_then_deallocate() {
-        let mut v = UnmanagedVec::<u32>::new(Global);
+        let mut v = UnmanagedVec::<u32, Global>::new(Global);
         {
-            // SAFETY: `Global` is the same (stateless) allocator throughout.
             let mut g = unsafe { v.with_alloc(Global) };
-            // Full `Vec` API is available through the guard.
             g.push(1);
             g.push(2);
             g.extend([3, 4, 5]);
             assert_eq!(g.len(), 5);
             assert_eq!(g.pop(), Some(5));
         }
-        // Parts were written back to `v`; slice access works without a guard.
         assert_eq!(v.len(), 4);
         assert_eq!(&v[..], &[1, 2, 3, 4]);
         assert_eq!(v.iter().sum::<u32>(), 10);
-        // SAFETY: same allocator as used for growth.
         unsafe { v.deallocate(Global) };
     }
 
     #[test]
     fn empty_vec_deallocates() {
-        let v = UnmanagedVec::<String>::new(Global);
-        // SAFETY: never grown; `Global` matches the empty allocation state.
+        let v = UnmanagedVec::<String, Global>::new(Global);
         unsafe { v.deallocate(Global) };
     }
 
@@ -237,16 +190,13 @@ mod tests {
         vec.extend([10, 20, 30]);
         let v = UnmanagedVec::from_vec(vec);
         assert_eq!(&v[..], &[10, 20, 30]);
-        // SAFETY: `vec` was built with `Global`, so `Global` is correct here.
         unsafe { v.deallocate(Global) };
     }
 
     #[test]
     #[should_panic(expected = "must be released via `deallocate`")]
     fn implicit_drop_panics() {
-        let mut v = UnmanagedVec::<u32>::new(Global);
-        // SAFETY: `Global` is consistent.
+        let mut v = UnmanagedVec::<u32, Global>::new(Global);
         unsafe { v.with_alloc(Global) }.push(1);
-        // `v` dropped implicitly at end of scope -> panics.
     }
 }

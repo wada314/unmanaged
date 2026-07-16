@@ -40,7 +40,7 @@ unsafe impl Allocator for CountingAllocator {
 fn main() {
     let alloc = CountingAllocator::new();
 
-    let mut v = UnmanagedVec::<u32>::new(&alloc);
+    let mut v = UnmanagedVec::<u32, _>::new(&alloc);
     // SAFETY: `&alloc` refers to the same allocator throughout this program.
     unsafe { v.with_alloc(&alloc) }.push(1);
 

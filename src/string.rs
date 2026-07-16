@@ -1,11 +1,11 @@
-//! An allocator-generic UTF-8 string type ([`String`]) and its allocator-less
+//! An allocator-generic UTF-8 string type ([`String`]) and its instance-less
 //! counterpart ([`UnmanagedString`]).
 //!
 //! Neither `allocator_api2` nor `std` provide an allocator-generic `String`, so
 //! this module defines [`String<A>`] as a thin wrapper over
 //! [`allocator_api2::vec::Vec<u8, A>`] that maintains the UTF-8 invariant. The
-//! allocator-less [`UnmanagedString`] then mirrors [`crate::UnmanagedVec`]:
-//! growth happens through a [`StringGuard`] that derefs to a full `String<A>`.
+//! instance-less [`UnmanagedString`] mirrors [`crate::UnmanagedVec`]: growth
+//! happens through a [`StringGuard`] that derefs to a full `String<A>`.
 
 use ::allocator_api2::alloc::Allocator;
 use ::allocator_api2::alloc::Global;
@@ -20,10 +20,6 @@ use ::core::str;
 use crate::vec::UnmanagedVec;
 
 /// A growable, allocator-generic UTF-8 string, backed by a `Vec<u8, A>`.
-///
-/// This is a small, `String`-like type that carries its allocator `A` like
-/// [`allocator_api2::vec::Vec`] does. Only a commonly-used subset of the
-/// standard [`String`](alloc::string::String) API is provided.
 pub struct String<A: Allocator = Global> {
     // Invariant: `vec` always holds valid UTF-8.
     vec: Vec<u8, A>,
@@ -142,13 +138,9 @@ impl<A: Allocator> String<A> {
     ///
     /// # Safety
     ///
-    /// The parts must originate from a `Vec<u8, A>` (via
-    /// [`into_raw_parts_with_alloc`]) whose bytes are valid UTF-8, and `alloc`
-    /// must be the allocator that owns the buffer.
-    ///
-    /// [`into_raw_parts_with_alloc`]: String::into_raw_parts_with_alloc
+    /// The parts must originate from a `Vec<u8, A>` whose bytes are valid UTF-8,
+    /// and `alloc` must own the buffer.
     pub unsafe fn from_raw_parts_in(ptr: *mut u8, len: usize, cap: usize, alloc: A) -> Self {
-        // SAFETY: forwarded to the caller's obligation.
         let vec = unsafe { Vec::from_raw_parts_in(ptr, len, cap, alloc) };
         Self { vec }
     }
@@ -230,33 +222,24 @@ impl<A: Allocator> PartialEq<&str> for String<A> {
     }
 }
 
-/// A contiguous, growable UTF-8 string that does not store its allocator.
-///
-/// This mirrors [`crate::UnmanagedVec`]: read access is available through
-/// [`Deref<Target = str>`], growth happens through a [`StringGuard`] returned by
-/// [`UnmanagedString::with_alloc`], and the buffer is released with
-/// [`UnmanagedString::deallocate`]. Dropping the value implicitly panics
-/// (inherited from the inner `UnmanagedVec`).
+/// A contiguous, growable UTF-8 string that does not store an allocator instance.
 #[must_use = "an UnmanagedString must be released via `deallocate`; dropping it panics"]
-pub struct UnmanagedString {
+pub struct UnmanagedString<A: Allocator> {
     // Invariant: `bytes` always holds valid UTF-8.
-    bytes: UnmanagedVec<u8>,
+    bytes: UnmanagedVec<u8, A>,
 }
 
-impl UnmanagedString {
+impl<A: Allocator> UnmanagedString<A> {
     /// Creates a new, empty `UnmanagedString` using `alloc`.
-    ///
-    /// `Vec::new_in` does not allocate, so passing `&alloc` keeps a move-only
-    /// allocator intact for later use.
     #[must_use = "an UnmanagedString must be released via `deallocate`; dropping it panics"]
-    pub fn new<A: Allocator>(alloc: A) -> Self {
+    pub fn new(alloc: A) -> Self {
         Self {
             bytes: UnmanagedVec::new(alloc),
         }
     }
 
-    /// Decomposes an owned [`String<A>`] into the allocator-less representation.
-    pub fn from_string<A: Allocator>(s: String<A>) -> Self {
+    /// Decomposes an owned [`String<A>`] into the instance-less representation.
+    pub fn from_string(s: String<A>) -> Self {
         Self {
             bytes: UnmanagedVec::from_vec(s.into_bytes()),
         }
@@ -272,21 +255,11 @@ impl UnmanagedString {
         self.bytes.is_empty()
     }
 
-    /// Borrows the string together with `alloc`, yielding a guard that derefs to
-    /// a full [`String<A>`].
-    ///
-    /// When the returned [`StringGuard`] is dropped, the raw parts of the
-    /// underlying buffer are written back into `self`.
-    ///
     /// # Safety
     ///
-    /// `alloc` must be the same allocator instance (or an equivalent one that
-    /// shares the same allocated blocks) that was used for any previous growth
-    /// of this string. Passing a different allocator is undefined behavior.
-    pub unsafe fn with_alloc<A: Allocator>(&mut self, alloc: A) -> StringGuard<'_, A> {
+    /// `alloc` must own this string's buffer.
+    pub unsafe fn with_alloc(&mut self, alloc: A) -> StringGuard<'_, A> {
         let (ptr, len, cap) = self.bytes.as_raw_parts();
-        // SAFETY: the parts describe this string's UTF-8 buffer, and `alloc`
-        // satisfies the caller's obligation above.
         let string = unsafe { String::from_raw_parts_in(ptr, len, cap, alloc) };
         StringGuard {
             string: ManuallyDrop::new(string),
@@ -294,19 +267,15 @@ impl UnmanagedString {
         }
     }
 
-    /// Drops the contents and frees the backing buffer through `alloc`.
-    ///
     /// # Safety
     ///
-    /// `alloc` must be the same allocator instance (or an equivalent one that
-    /// shares the same allocated blocks) that was used to grow this string.
-    pub unsafe fn deallocate<A: Allocator>(self, alloc: A) {
-        // SAFETY: forwarded to the caller's obligation on `deallocate`.
+    /// `alloc` must own this string's buffer.
+    pub unsafe fn deallocate(self, alloc: A) {
         unsafe { self.bytes.deallocate(alloc) }
     }
 }
 
-impl Deref for UnmanagedString {
+impl<A: Allocator> Deref for UnmanagedString<A> {
     type Target = str;
 
     fn deref(&self) -> &str {
@@ -315,16 +284,10 @@ impl Deref for UnmanagedString {
     }
 }
 
-/// A temporary handle that grants the full [`String<A>`] API over an
-/// [`UnmanagedString`] by pairing it with an allocator for the duration of a
-/// borrow.
-///
-/// Obtain one via [`UnmanagedString::with_alloc`]. On drop, the current raw
-/// parts of the underlying `String` are written back into the originating
-/// `UnmanagedString`; the buffer itself is **not** freed.
+/// Temporary full [`String<A>`] API over an [`UnmanagedString`].
 pub struct StringGuard<'a, A: Allocator> {
     string: ManuallyDrop<String<A>>,
-    origin: &'a mut UnmanagedVec<u8>,
+    origin: &'a mut UnmanagedVec<u8, A>,
 }
 
 impl<'a, A: Allocator> Deref for StringGuard<'a, A> {
@@ -343,10 +306,8 @@ impl<'a, A: Allocator> DerefMut for StringGuard<'a, A> {
 
 impl<'a, A: Allocator> Drop for StringGuard<'a, A> {
     fn drop(&mut self) {
-        // SAFETY: `self.string` is never used again after this take.
         let string = unsafe { ManuallyDrop::take(&mut self.string) };
         let (ptr, len, cap, _alloc) = string.into_raw_parts_with_alloc();
-        // SAFETY: parts came from a `String` built from the origin's own parts.
         unsafe { self.origin.set_raw_parts(ptr, len, cap) };
     }
 }
@@ -374,9 +335,7 @@ mod tests {
     fn build_and_read() {
         let mut s = UnmanagedString::new(Global);
         {
-            // SAFETY: `Global` is the same (stateless) allocator throughout.
             let mut g = unsafe { s.with_alloc(Global) };
-            // Full `String<A>` API is available through the guard.
             g.push('h');
             g.push_str("ello, ");
             g.push_str("world");
@@ -386,27 +345,22 @@ mod tests {
             g.truncate(5);
             assert_eq!(&**g, "hello");
         }
-        // Read back without an allocator via `Deref<Target = str>`.
         assert_eq!(&*s, "hello");
         assert_eq!(s.len(), 5);
-        // SAFETY: same allocator as used for growth.
         unsafe { s.deallocate(Global) };
     }
 
     #[test]
     fn multibyte_pop() {
         let mut s = UnmanagedString::new(Global);
-        // SAFETY: consistent allocator.
         unsafe { s.with_alloc(Global) }.push_str("aé中");
         {
-            // SAFETY: consistent allocator.
             let mut g = unsafe { s.with_alloc(Global) };
             assert_eq!(g.pop(), Some('中'));
             assert_eq!(g.pop(), Some('é'));
             assert_eq!(g.pop(), Some('a'));
             assert_eq!(g.pop(), None);
         }
-        // SAFETY: consistent allocator.
         unsafe { s.deallocate(Global) };
     }
 
@@ -415,7 +369,6 @@ mod tests {
         let owned = String::from_str_in("roundtrip", Global);
         let s = UnmanagedString::from_string(owned);
         assert_eq!(&*s, "roundtrip");
-        // SAFETY: `owned` was built with `Global`.
         unsafe { s.deallocate(Global) };
     }
 
@@ -423,8 +376,6 @@ mod tests {
     #[should_panic(expected = "must be released via `deallocate`")]
     fn implicit_drop_panics() {
         let mut s = UnmanagedString::new(Global);
-        // SAFETY: consistent allocator.
         unsafe { s.with_alloc(Global) }.push('x');
-        // `s` dropped implicitly at end of scope -> inner UnmanagedVec panics.
     }
 }
