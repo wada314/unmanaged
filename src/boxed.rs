@@ -76,7 +76,9 @@ impl<T, A: Allocator> DerefMut for UnmanagedBox<T, A> {
 
 impl<T, A: Allocator> Drop for UnmanagedBox<T, A> {
     fn drop(&mut self) {
-        panic!("UnmanagedBox must be released via `deallocate`/`into_inner`, not dropped implicitly");
+        panic!(
+            "UnmanagedBox must be released via `deallocate`/`into_inner`, not dropped implicitly"
+        );
     }
 }
 
