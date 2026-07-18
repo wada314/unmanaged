@@ -4,11 +4,13 @@
 use ::allocator_api2::alloc::Allocator;
 use ::allocator_api2::vec::Vec;
 use ::core::marker::PhantomData;
-use ::core::mem::ManuallyDrop;
+use ::core::mem::{self, ManuallyDrop};
 use ::core::ops::Deref;
 use ::core::ops::DerefMut;
-use ::core::ptr::NonNull;
+use ::core::ptr::{self, NonNull};
 use ::core::slice;
+
+use crate::traits::{CloneIn, DeallocateIn};
 
 /// A contiguous growable array that does not store an allocator instance.
 ///
@@ -64,15 +66,19 @@ impl<T, A: Allocator> UnmanagedVec<T, A> {
 
     /// Allocates a copy of this vector in `alloc`.
     ///
-    /// Elements are cloned with [`Clone`]. The destination buffer is owned by
-    /// `alloc`; it need not be the same allocator instance that owns `self`.
+    /// Elements are deep-copied with [`CloneIn`]. The destination buffer is
+    /// owned by `alloc`; it need not be the same allocator instance that owns
+    /// `self`.
     #[must_use = "an UnmanagedVec must be released via `deallocate`; dropping it panics"]
     pub fn clone_in(&self, alloc: A) -> Self
     where
-        T: Clone,
+        T: CloneIn<A>,
+        A: Clone,
     {
-        let mut vec = Vec::with_capacity_in(self.len(), alloc);
-        vec.extend(self.iter().cloned());
+        let mut vec = Vec::with_capacity_in(self.len(), alloc.clone());
+        for e in self.iter() {
+            vec.push(e.clone_in(alloc.clone()));
+        }
         Self::from_vec(vec)
     }
 
@@ -106,17 +112,72 @@ impl<T, A: Allocator> UnmanagedVec<T, A> {
         }
     }
 
-    /// Drops all elements and frees the backing buffer through `alloc`.
+    /// Releases every element via [`DeallocateIn`], then frees the buffer.
+    ///
+    /// Nested unmanaged elements are freed by the element trait (not by
+    /// panicking [`Drop`]), so `UnmanagedVec<UnmanagedString<_>>` can be
+    /// released with a single call.
     ///
     /// # Safety
     ///
-    /// `alloc` must be interchangeable with the allocator that owns this buffer.
-    pub unsafe fn deallocate(self, alloc: A) {
+    /// `alloc` must own this vector's buffer and every live element's buffers.
+    pub unsafe fn deallocate(self, alloc: A)
+    where
+        T: DeallocateIn<A>,
+        A: Clone,
+    {
         let ptr = self.ptr.as_ptr();
         let len = self.len;
         let cap = self.cap;
-        ::core::mem::forget(self);
-        let _ = unsafe { Vec::from_raw_parts_in(ptr, len, cap, alloc) };
+        mem::forget(self);
+        for i in 0..len {
+            // SAFETY: `ptr` holds `len` initialized elements; each is read once.
+            let elem = unsafe { ptr::read(ptr.add(i)) };
+            // SAFETY: same `alloc` obligation as this method.
+            unsafe { elem.deallocate_in(alloc.clone()) };
+        }
+        // Length 0 so `Vec` does not drop elements again.
+        let _ = unsafe { Vec::from_raw_parts_in(ptr, 0, cap, alloc) };
+    }
+
+    /// Frees the backing buffer of a vector whose elements were already removed.
+    ///
+    /// Use this when elements were released separately (e.g. message `Drop`
+    /// paths that `pop` + element teardown) and `T` may not implement
+    /// [`DeallocateIn`].
+    ///
+    /// # Safety
+    ///
+    /// `self.len` must be `0`. `alloc` must own this vector's buffer.
+    pub unsafe fn deallocate_buffer(self, alloc: A) {
+        debug_assert_eq!(self.len, 0);
+        let ptr = self.ptr.as_ptr();
+        let cap = self.cap;
+        mem::forget(self);
+        let _ = unsafe { Vec::from_raw_parts_in(ptr, 0, cap, alloc) };
+    }
+}
+
+impl<T, A> CloneIn<A> for UnmanagedVec<T, A>
+where
+    T: CloneIn<A>,
+    A: Allocator + Clone,
+{
+    #[inline]
+    fn clone_in(&self, alloc: A) -> Self {
+        UnmanagedVec::clone_in(self, alloc)
+    }
+}
+
+impl<T, A> DeallocateIn<A> for UnmanagedVec<T, A>
+where
+    T: DeallocateIn<A>,
+    A: Allocator + Clone,
+{
+    #[inline]
+    unsafe fn deallocate_in(self, alloc: A) {
+        // SAFETY: forwarded to the caller's obligation on `alloc`.
+        unsafe { self.deallocate(alloc) };
     }
 }
 
@@ -218,6 +279,28 @@ mod tests {
         let c = v.clone_in(Global);
         assert_eq!(&c[..], &[1, 2, 3]);
         assert_eq!(&v[..], &[1, 2, 3]);
+        unsafe { c.deallocate(Global) };
+        unsafe { v.deallocate(Global) };
+    }
+
+    #[test]
+    fn clone_in_and_deallocate_nested_strings() {
+        use crate::string::String as AString;
+        use crate::UnmanagedString;
+
+        let mut v = UnmanagedVec::<UnmanagedString<Global>, Global>::new(Global);
+        {
+            let mut g = unsafe { v.with_alloc(Global) };
+            g.push(UnmanagedString::from_string(AString::from_str_in(
+                "a", Global,
+            )));
+            g.push(UnmanagedString::from_string(AString::from_str_in(
+                "b", Global,
+            )));
+        }
+        let c = v.clone_in(Global);
+        assert_eq!(&*c[0], "a");
+        assert_eq!(&*c[1], "b");
         unsafe { c.deallocate(Global) };
         unsafe { v.deallocate(Global) };
     }

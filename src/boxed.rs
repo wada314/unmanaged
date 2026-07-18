@@ -9,6 +9,8 @@ use ::core::ops::Deref;
 use ::core::ops::DerefMut;
 use ::core::ptr::NonNull;
 
+use crate::traits::{CloneIn, DeallocateIn};
+
 /// An owned heap allocation that does not store an allocator instance.
 ///
 /// Inline size is one pointer plus [`PhantomData<A>`] (ZST).
@@ -42,9 +44,10 @@ impl<T, A: Allocator> UnmanagedBox<T, A> {
     #[must_use = "an UnmanagedBox must be released via `deallocate`/`into_inner`; dropping it panics"]
     pub fn clone_in(&self, alloc: A) -> Self
     where
-        T: Clone,
+        T: CloneIn<A>,
+        A: Clone,
     {
-        Self::new_in((**self).clone(), alloc)
+        Self::new_in((**self).clone_in(alloc.clone()), alloc)
     }
 
     /// # Safety
@@ -56,11 +59,19 @@ impl<T, A: Allocator> UnmanagedBox<T, A> {
         unsafe { Box::from_raw_in(ptr, alloc) }
     }
 
+    /// Releases the inner value via [`DeallocateIn`], then frees the box slot.
+    ///
     /// # Safety
     ///
-    /// `alloc` must own this box's allocation.
-    pub unsafe fn deallocate(self, alloc: A) {
-        let _ = unsafe { self.into_box(alloc) };
+    /// `alloc` must own this box's allocation and the inner value's buffers.
+    pub unsafe fn deallocate(self, alloc: A)
+    where
+        T: DeallocateIn<A>,
+        A: Clone,
+    {
+        let value = unsafe { self.into_inner(alloc.clone()) };
+        // SAFETY: same `alloc` obligation as this method.
+        unsafe { value.deallocate_in(alloc) };
     }
 
     /// # Safety
@@ -69,6 +80,29 @@ impl<T, A: Allocator> UnmanagedBox<T, A> {
     pub unsafe fn into_inner(self, alloc: A) -> T {
         let b = unsafe { self.into_box(alloc) };
         Box::into_inner(b)
+    }
+}
+
+impl<T, A> CloneIn<A> for UnmanagedBox<T, A>
+where
+    T: CloneIn<A>,
+    A: Allocator + Clone,
+{
+    #[inline]
+    fn clone_in(&self, alloc: A) -> Self {
+        UnmanagedBox::clone_in(self, alloc)
+    }
+}
+
+impl<T, A> DeallocateIn<A> for UnmanagedBox<T, A>
+where
+    T: DeallocateIn<A>,
+    A: Allocator + Clone,
+{
+    #[inline]
+    unsafe fn deallocate_in(self, alloc: A) {
+        // SAFETY: forwarded to the caller's obligation on `alloc`.
+        unsafe { self.deallocate(alloc) };
     }
 }
 
@@ -130,6 +164,14 @@ mod tests {
         assert_eq!(&*c, "boxed");
         assert_eq!(&*b, "boxed");
         unsafe { c.deallocate(Global) };
+        unsafe { b.deallocate(Global) };
+    }
+
+    #[test]
+    fn deallocate_nested_unmanaged_string() {
+        use crate::UnmanagedString;
+        let inner = UnmanagedString::from_string(crate::String::from_str_in("inner", Global));
+        let b = UnmanagedBox::new_in(inner, Global);
         unsafe { b.deallocate(Global) };
     }
 

@@ -10,17 +10,20 @@
 //! such a value implicitly panics at runtime (see [`vec`]).
 //!
 //! Copying allocates a **new** buffer in a caller-supplied allocator via
-//! `clone_in(&self, alloc)` (safe). That allocator need not be the same instance
-//! that owns the source.
+//! [`CloneIn`] / `clone_in` (safe). Nested unmanaged values are released through
+//! [`DeallocateIn`] so a container can free its elements without relying on
+//! their panicking [`Drop`] impls.
 #![no_std]
 
 extern crate alloc;
 
 pub mod boxed;
 pub mod string;
+pub mod traits;
 pub mod vec;
 
 pub use crate::boxed::UnmanagedBox;
 pub use crate::string::String;
 pub use crate::string::UnmanagedString;
+pub use crate::traits::{CloneIn, DeallocateIn};
 pub use crate::vec::UnmanagedVec;

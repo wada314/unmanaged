@@ -17,6 +17,7 @@ use ::core::ops::Deref;
 use ::core::ops::DerefMut;
 use ::core::str;
 
+use crate::traits::{CloneIn, DeallocateIn};
 use crate::vec::UnmanagedVec;
 
 /// A growable, allocator-generic UTF-8 string, backed by a `Vec<u8, A>`.
@@ -279,8 +280,27 @@ impl<A: Allocator> UnmanagedString<A> {
     /// # Safety
     ///
     /// `alloc` must own this string's buffer.
-    pub unsafe fn deallocate(self, alloc: A) {
+    pub unsafe fn deallocate(self, alloc: A)
+    where
+        A: Clone,
+    {
+        // `u8: DeallocateIn` — byte buffer only; no nested unmanaged elements.
         unsafe { self.bytes.deallocate(alloc) }
+    }
+}
+
+impl<A: Allocator + Clone> CloneIn<A> for UnmanagedString<A> {
+    #[inline]
+    fn clone_in(&self, alloc: A) -> Self {
+        UnmanagedString::clone_in(self, alloc)
+    }
+}
+
+impl<A: Allocator + Clone> DeallocateIn<A> for UnmanagedString<A> {
+    #[inline]
+    unsafe fn deallocate_in(self, alloc: A) {
+        // SAFETY: forwarded to the caller's obligation on `alloc`.
+        unsafe { self.deallocate(alloc) };
     }
 }
 
