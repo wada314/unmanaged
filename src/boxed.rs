@@ -35,6 +35,18 @@ impl<T, A: Allocator> UnmanagedBox<T, A> {
         }
     }
 
+    /// Allocates a copy of the boxed value in `alloc`.
+    ///
+    /// The destination allocation is owned by `alloc`; it need not be the same
+    /// allocator instance that owns `self`.
+    #[must_use = "an UnmanagedBox must be released via `deallocate`/`into_inner`; dropping it panics"]
+    pub fn clone_in(&self, alloc: A) -> Self
+    where
+        T: Clone,
+    {
+        Self::new_in((**self).clone(), alloc)
+    }
+
     /// # Safety
     ///
     /// `alloc` must own this box's allocation.
@@ -108,6 +120,16 @@ mod tests {
     #[test]
     fn deallocate_drops_inner() {
         let b = UnmanagedBox::new_in("dropme".to_string(), Global);
+        unsafe { b.deallocate(Global) };
+    }
+
+    #[test]
+    fn clone_in_copies_value() {
+        let b = UnmanagedBox::new_in(String::from("boxed"), Global);
+        let c = b.clone_in(Global);
+        assert_eq!(&*c, "boxed");
+        assert_eq!(&*b, "boxed");
+        unsafe { c.deallocate(Global) };
         unsafe { b.deallocate(Global) };
     }
 

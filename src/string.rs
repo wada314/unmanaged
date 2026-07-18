@@ -255,6 +255,15 @@ impl<A: Allocator> UnmanagedString<A> {
         self.bytes.is_empty()
     }
 
+    /// Allocates a copy of this string in `alloc`.
+    ///
+    /// The destination buffer is owned by `alloc`; it need not be the same
+    /// allocator instance that owns `self`.
+    #[must_use = "an UnmanagedString must be released via `deallocate`; dropping it panics"]
+    pub fn clone_in(&self, alloc: A) -> Self {
+        Self::from_string(String::from_str_in(self, alloc))
+    }
+
     /// # Safety
     ///
     /// `alloc` must own this string's buffer.
@@ -369,6 +378,17 @@ mod tests {
         let owned = String::from_str_in("roundtrip", Global);
         let s = UnmanagedString::from_string(owned);
         assert_eq!(&*s, "roundtrip");
+        unsafe { s.deallocate(Global) };
+    }
+
+    #[test]
+    fn clone_in_copies_contents() {
+        let mut s = UnmanagedString::new(Global);
+        unsafe { s.with_alloc(Global) }.push_str("clone me");
+        let c = s.clone_in(Global);
+        assert_eq!(&*c, "clone me");
+        assert_eq!(&*s, "clone me");
+        unsafe { c.deallocate(Global) };
         unsafe { s.deallocate(Global) };
     }
 

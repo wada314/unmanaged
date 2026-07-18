@@ -8,6 +8,10 @@
 //! cannot free themselves through the normal [`Drop`] mechanism. Instead they
 //! must be released explicitly via a `deallocate(self, alloc)` method. Dropping
 //! such a value implicitly panics at runtime (see [`vec`]).
+//!
+//! Copying allocates a **new** buffer in a caller-supplied allocator via
+//! `clone_in(&self, alloc)` (safe). That allocator need not be the same instance
+//! that owns the source.
 #![no_std]
 
 extern crate alloc;

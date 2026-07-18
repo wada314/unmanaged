@@ -18,6 +18,7 @@ use ::core::slice;
 ///
 /// * Slice access via [`Deref`] / [`DerefMut`] to `[T]` needs no allocator.
 /// * Growth via [`UnmanagedVec::with_alloc`] → [`VecGuard`].
+/// * Copy via [`UnmanagedVec::clone_in`] (allocates a new buffer in the given allocator).
 /// * Release via [`UnmanagedVec::deallocate`].
 ///
 /// # Dropping
@@ -59,6 +60,20 @@ impl<T, A: Allocator> UnmanagedVec<T, A> {
     /// Returns the number of elements the vector can hold without reallocating.
     pub const fn capacity(&self) -> usize {
         self.cap
+    }
+
+    /// Allocates a copy of this vector in `alloc`.
+    ///
+    /// Elements are cloned with [`Clone`]. The destination buffer is owned by
+    /// `alloc`; it need not be the same allocator instance that owns `self`.
+    #[must_use = "an UnmanagedVec must be released via `deallocate`; dropping it panics"]
+    pub fn clone_in(&self, alloc: A) -> Self
+    where
+        T: Clone,
+    {
+        let mut vec = Vec::with_capacity_in(self.len(), alloc);
+        vec.extend(self.iter().cloned());
+        Self::from_vec(vec)
     }
 
     /// Returns the raw parts (data pointer, length, capacity) of the vector.
@@ -190,6 +205,20 @@ mod tests {
         vec.extend([10, 20, 30]);
         let v = UnmanagedVec::from_vec(vec);
         assert_eq!(&v[..], &[10, 20, 30]);
+        unsafe { v.deallocate(Global) };
+    }
+
+    #[test]
+    fn clone_in_copies_elements() {
+        let mut v = UnmanagedVec::<u32, Global>::new(Global);
+        {
+            let mut g = unsafe { v.with_alloc(Global) };
+            g.extend([1, 2, 3]);
+        }
+        let c = v.clone_in(Global);
+        assert_eq!(&c[..], &[1, 2, 3]);
+        assert_eq!(&v[..], &[1, 2, 3]);
+        unsafe { c.deallocate(Global) };
         unsafe { v.deallocate(Global) };
     }
 
