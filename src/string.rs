@@ -315,6 +315,12 @@ impl<A: Allocator> Deref for UnmanagedString<A> {
     }
 }
 
+impl<A: Allocator> fmt::Debug for UnmanagedString<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&**self, f)
+    }
+}
+
 impl<A: Allocator> PartialEq for UnmanagedString<A> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
