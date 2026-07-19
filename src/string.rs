@@ -10,8 +10,10 @@
 use ::allocator_api2::alloc::Allocator;
 use ::allocator_api2::alloc::Global;
 use ::allocator_api2::vec::Vec;
+use ::core::borrow::Borrow;
 use ::core::cmp::PartialEq;
 use ::core::fmt;
+use ::core::hash::{Hash, Hasher};
 use ::core::mem::ManuallyDrop;
 use ::core::ops::Deref;
 use ::core::ops::DerefMut;
@@ -310,6 +312,29 @@ impl<A: Allocator> Deref for UnmanagedString<A> {
     fn deref(&self) -> &str {
         // SAFETY: `bytes` is maintained as valid UTF-8 at all times.
         unsafe { str::from_utf8_unchecked(&self.bytes) }
+    }
+}
+
+impl<A: Allocator> PartialEq for UnmanagedString<A> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl<A: Allocator> Eq for UnmanagedString<A> {}
+
+impl<A: Allocator> Hash for UnmanagedString<A> {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (**self).hash(state);
+    }
+}
+
+impl<A: Allocator> Borrow<str> for UnmanagedString<A> {
+    #[inline]
+    fn borrow(&self) -> &str {
+        self
     }
 }
 
