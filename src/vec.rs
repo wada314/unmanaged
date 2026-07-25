@@ -3,6 +3,8 @@
 
 use ::allocator_api2::alloc::Allocator;
 use ::allocator_api2::vec::Vec;
+use ::core::fmt;
+use ::core::hash::{Hash, Hasher};
 use ::core::marker::PhantomData;
 use ::core::mem::{self, ManuallyDrop};
 use ::core::ops::Deref;
@@ -203,6 +205,28 @@ impl<T, A: Allocator> Drop for UnmanagedVec<T, A> {
     }
 }
 
+impl<T: fmt::Debug, A: Allocator> fmt::Debug for UnmanagedVec<T, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&**self, f)
+    }
+}
+
+impl<T: PartialEq, A: Allocator> PartialEq for UnmanagedVec<T, A> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl<T: Eq, A: Allocator> Eq for UnmanagedVec<T, A> {}
+
+impl<T: Hash, A: Allocator> Hash for UnmanagedVec<T, A> {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (**self).hash(state);
+    }
+}
+
 /// Temporary full [`Vec<T, A>`] API over an [`UnmanagedVec`].
 pub struct VecGuard<'a, T, A: Allocator> {
     vec: ManuallyDrop<Vec<T, A>>,
@@ -267,6 +291,24 @@ mod tests {
         let v = UnmanagedVec::from_vec(vec);
         assert_eq!(&v[..], &[10, 20, 30]);
         unsafe { v.deallocate(Global) };
+    }
+
+    #[test]
+    fn debug_and_eq_compare_slice_contents() {
+        use ::alloc::format;
+
+        let mut a = UnmanagedVec::<u8, Global>::new(Global);
+        let mut b = UnmanagedVec::<u8, Global>::new(Global);
+        {
+            let mut ga = unsafe { a.with_alloc(Global) };
+            ga.extend_from_slice(b"hi");
+            let mut gb = unsafe { b.with_alloc(Global) };
+            gb.extend_from_slice(b"hi");
+        }
+        assert_eq!(a, b);
+        assert_eq!(format!("{:?}", a), "[104, 105]");
+        unsafe { a.deallocate(Global) };
+        unsafe { b.deallocate(Global) };
     }
 
     #[test]
