@@ -187,6 +187,13 @@ impl<A: Allocator> AsRef<str> for String<A> {
     }
 }
 
+impl<A: Allocator> Borrow<str> for String<A> {
+    #[inline]
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
 impl<A: Allocator> AsRef<[u8]> for String<A> {
     fn as_ref(&self) -> &[u8] {
         self.as_bytes()
