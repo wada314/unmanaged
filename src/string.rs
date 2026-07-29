@@ -255,6 +255,17 @@ impl<A: Allocator> UnmanagedString<A> {
         }
     }
 
+    /// Converts `bytes` into a string if it is valid UTF-8.
+    ///
+    /// On failure, returns the original buffer so the caller can still
+    /// [`deallocate`](UnmanagedVec::deallocate) it.
+    pub fn from_utf8(bytes: UnmanagedVec<u8, A>) -> Result<Self, UnmanagedVec<u8, A>> {
+        match str::from_utf8(&bytes) {
+            Ok(_) => Ok(Self { bytes }),
+            Err(_) => Err(bytes),
+        }
+    }
+
     /// Returns the length of the string in bytes.
     pub fn len(&self) -> usize {
         self.bytes.len()
