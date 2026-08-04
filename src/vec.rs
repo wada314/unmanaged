@@ -12,7 +12,7 @@ use ::core::ops::DerefMut;
 use ::core::ptr::{self, NonNull};
 use ::core::slice;
 
-use crate::traits::{CloneIn, DeallocateIn};
+use crate::traits::{CloneIn, DeallocateIn, ToOwnedIn};
 
 /// A contiguous growable array that does not store an allocator instance.
 ///
@@ -77,11 +77,7 @@ impl<T, A: Allocator> UnmanagedVec<T, A> {
         T: CloneIn<A>,
         A: Clone,
     {
-        let mut vec = Vec::with_capacity_in(self.len(), alloc.clone());
-        for e in self.iter() {
-            vec.push(e.clone_in(alloc.clone()));
-        }
-        Self::from_vec(vec)
+        <[T] as ToOwnedIn<A>>::to_owned_in(self, alloc)
     }
 
     /// Returns the raw parts (data pointer, length, capacity) of the vector.
@@ -157,6 +153,23 @@ impl<T, A: Allocator> UnmanagedVec<T, A> {
         let cap = self.cap;
         mem::forget(self);
         let _ = unsafe { Vec::from_raw_parts_in(ptr, 0, cap, alloc) };
+    }
+}
+
+impl<T, A> ToOwnedIn<A> for [T]
+where
+    T: CloneIn<A>,
+    A: Allocator + Clone,
+{
+    type Owned = UnmanagedVec<T, A>;
+
+    #[inline]
+    fn to_owned_in(&self, alloc: A) -> UnmanagedVec<T, A> {
+        let mut vec = Vec::with_capacity_in(self.len(), alloc.clone());
+        for e in self.iter() {
+            vec.push(e.clone_in(alloc.clone()));
+        }
+        UnmanagedVec::from_vec(vec)
     }
 }
 
@@ -258,6 +271,7 @@ impl<'a, T, A: Allocator> Drop for VecGuard<'a, T, A> {
 #[cfg(test)]
 mod tests {
     use super::UnmanagedVec;
+    use crate::traits::ToOwnedIn;
     use ::alloc::string::String;
     use ::allocator_api2::alloc::Global;
 
@@ -323,6 +337,13 @@ mod tests {
         assert_eq!(&v[..], &[1, 2, 3]);
         unsafe { c.deallocate(Global) };
         unsafe { v.deallocate(Global) };
+    }
+
+    #[test]
+    fn slice_to_owned_in_copies_elements() {
+        let owned: UnmanagedVec<u32, Global> = [1u32, 2, 3].as_slice().to_owned_in(Global);
+        assert_eq!(&owned[..], &[1, 2, 3]);
+        unsafe { owned.deallocate(Global) };
     }
 
     #[test]

@@ -19,7 +19,7 @@ use ::core::ops::Deref;
 use ::core::ops::DerefMut;
 use ::core::str;
 
-use crate::traits::{CloneIn, DeallocateIn};
+use crate::traits::{CloneIn, DeallocateIn, ToOwnedIn};
 use crate::vec::UnmanagedVec;
 
 /// A growable, allocator-generic UTF-8 string, backed by a `Vec<u8, A>`.
@@ -282,7 +282,7 @@ impl<A: Allocator> UnmanagedString<A> {
     /// allocator instance that owns `self`.
     #[must_use = "an UnmanagedString must be released via `deallocate`; dropping it panics"]
     pub fn clone_in(&self, alloc: A) -> Self {
-        Self::from_string(String::from_str_in(self, alloc))
+        <str as ToOwnedIn<A>>::to_owned_in(self, alloc)
     }
 
     /// # Safety
@@ -306,6 +306,15 @@ impl<A: Allocator> UnmanagedString<A> {
     {
         // `u8: DeallocateIn` — byte buffer only; no nested unmanaged elements.
         unsafe { self.bytes.deallocate(alloc) }
+    }
+}
+
+impl<A: Allocator> ToOwnedIn<A> for str {
+    type Owned = UnmanagedString<A>;
+
+    #[inline]
+    fn to_owned_in(&self, alloc: A) -> UnmanagedString<A> {
+        UnmanagedString::from_string(String::from_str_in(self, alloc))
     }
 }
 

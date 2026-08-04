@@ -13,6 +13,38 @@ pub trait CloneIn<A: Allocator> {
     fn clone_in(&self, alloc: A) -> Self;
 }
 
+/// Allocator-aware borrowed → owned conversion (like [`ToOwned`], with `alloc`).
+///
+/// Mirrors std's shape:
+/// - blanket [`CloneIn`] → `Owned = Self` (cf. `T: Clone` → `Owned = T`)
+/// - [`str`] → [`UnmanagedString`](crate::UnmanagedString) (cf. `String`)
+/// - `[T]` → [`UnmanagedVec`](crate::UnmanagedVec) (cf. `Vec<T>`)
+///
+/// `alloc` owns the returned value's buffers when the owned form is heap-backed.
+/// Bare references do not implement [`CloneIn`], so they do not take the blanket
+/// (unlike std `ToOwned`, where `&T: Clone` always holds).
+pub trait ToOwnedIn<A: Allocator> {
+    /// Owned form produced in `alloc`.
+    type Owned;
+
+    /// Copies `self` into a value owned by `alloc`.
+    fn to_owned_in(&self, alloc: A) -> Self::Owned;
+}
+
+/// Like [`ToOwned`] for `T: Clone`: owned form is `Self`, built via [`CloneIn`].
+impl<T, A> ToOwnedIn<A> for T
+where
+    T: CloneIn<A>,
+    A: Allocator,
+{
+    type Owned = T;
+
+    #[inline]
+    fn to_owned_in(&self, alloc: A) -> T {
+        self.clone_in(alloc)
+    }
+}
+
 /// Release heap storage owned by `self` through `alloc`.
 pub trait DeallocateIn<A: Allocator> {
     /// Frees buffers owned by `self`.
