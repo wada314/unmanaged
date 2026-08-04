@@ -9,8 +9,24 @@ use ::allocator_api2::alloc::Allocator;
 ///
 /// `alloc` owns the **new** value's buffers; it need not be the same instance
 /// that owns `self`.
+///
+/// [`Copy`] types ignore `alloc` (bitwise copy). Heap-backed types use it.
 pub trait CloneIn<A: Allocator> {
     fn clone_in(&self, alloc: A) -> Self;
+}
+
+/// Allocator-aware empty / type-zero construction (like [`Default`], with `alloc`).
+///
+/// [`Copy`] + [`Default`] types ignore `alloc`. Heap-backed types
+/// ([`UnmanagedString`](crate::UnmanagedString), [`UnmanagedVec`](crate::UnmanagedVec),
+/// [`UnmanagedBox`](crate::UnmanagedBox)) use it to allocate.
+///
+/// Do **not** implement [`Default`] in a way that picks an allocator and then
+/// rely on the [`Copy`] blanket here — non-`Copy` messages must impl `DefaultIn`
+/// explicitly so the caller's `alloc` is honored.
+pub trait DefaultIn<A: Allocator> {
+    /// Builds the empty / type-zero value, using `alloc` when heap-backed.
+    fn default_in(alloc: A) -> Self;
 }
 
 /// Allocator-aware borrowed → owned conversion (like [`ToOwned`], with `alloc`).
@@ -21,8 +37,6 @@ pub trait CloneIn<A: Allocator> {
 /// - `[T]` → [`UnmanagedVec`](crate::UnmanagedVec) (cf. `Vec<T>`)
 ///
 /// `alloc` owns the returned value's buffers when the owned form is heap-backed.
-/// Bare references do not implement [`CloneIn`], so they do not take the blanket
-/// (unlike std `ToOwned`, where `&T: Clone` always holds).
 pub trait ToOwnedIn<A: Allocator> {
     /// Owned form produced in `alloc`.
     type Owned;
@@ -46,6 +60,8 @@ where
 }
 
 /// Release heap storage owned by `self` through `alloc`.
+///
+/// [`Copy`] types are a no-op (no heap owned by the value itself).
 pub trait DeallocateIn<A: Allocator> {
     /// Frees buffers owned by `self`.
     ///
@@ -55,74 +71,28 @@ pub trait DeallocateIn<A: Allocator> {
     unsafe fn deallocate_in(self, alloc: A);
 }
 
-macro_rules! impl_clone_in_via_clone {
-    ($($ty:ty),+ $(,)?) => {
-        $(
-            impl<A: Allocator> CloneIn<A> for $ty {
-                #[inline]
-                fn clone_in(&self, _alloc: A) -> Self {
-                    self.clone()
-                }
-            }
-        )+
-    };
-}
-
-macro_rules! impl_deallocate_in_noop {
-    ($($ty:ty),+ $(,)?) => {
-        $(
-            impl<A: Allocator> DeallocateIn<A> for $ty {
-                #[inline]
-                unsafe fn deallocate_in(self, _alloc: A) {}
-            }
-        )+
-    };
-}
-
-impl_clone_in_via_clone!(
-    u8,
-    u16,
-    u32,
-    u64,
-    usize,
-    i8,
-    i16,
-    i32,
-    i64,
-    isize,
-    bool,
-    f32,
-    f64,
-    ()
-);
-impl_deallocate_in_noop!(
-    u8,
-    u16,
-    u32,
-    u64,
-    usize,
-    i8,
-    i16,
-    i32,
-    i64,
-    isize,
-    bool,
-    f32,
-    f64,
-    ()
-);
-
-/// [`alloc::string::String`] carries its own allocator; `alloc` is ignored.
-impl<A: Allocator> CloneIn<A> for ::alloc::string::String {
+/// Bitwise-copy payloads: `alloc` is irrelevant.
+impl<T: Copy, A: Allocator> CloneIn<A> for T {
     #[inline]
     fn clone_in(&self, _alloc: A) -> Self {
-        self.clone()
+        *self
     }
 }
 
-impl<A: Allocator> DeallocateIn<A> for ::alloc::string::String {
+/// Bitwise-copy + [`Default`] payloads: `alloc` is irrelevant.
+impl<T, A> DefaultIn<A> for T
+where
+    T: Copy + Default,
+    A: Allocator,
+{
     #[inline]
-    unsafe fn deallocate_in(self, _alloc: A) {
-        drop(self);
+    fn default_in(_alloc: A) -> Self {
+        T::default()
     }
+}
+
+/// Bitwise-copy payloads own no heap buffers.
+impl<T: Copy, A: Allocator> DeallocateIn<A> for T {
+    #[inline]
+    unsafe fn deallocate_in(self, _alloc: A) {}
 }

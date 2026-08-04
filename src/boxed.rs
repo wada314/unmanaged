@@ -9,7 +9,7 @@ use ::core::ops::Deref;
 use ::core::ops::DerefMut;
 use ::core::ptr::NonNull;
 
-use crate::traits::{CloneIn, DeallocateIn};
+use crate::traits::{CloneIn, DeallocateIn, DefaultIn};
 
 /// An owned heap allocation that does not store an allocator instance.
 ///
@@ -83,6 +83,17 @@ impl<T, A: Allocator> UnmanagedBox<T, A> {
     }
 }
 
+impl<T, A> DefaultIn<A> for UnmanagedBox<T, A>
+where
+    T: DefaultIn<A>,
+    A: Allocator + Clone,
+{
+    #[inline]
+    fn default_in(alloc: A) -> Self {
+        UnmanagedBox::new_in(T::default_in(alloc.clone()), alloc)
+    }
+}
+
 impl<T, A> CloneIn<A> for UnmanagedBox<T, A>
 where
     T: CloneIn<A>,
@@ -132,7 +143,6 @@ impl<T, A: Allocator> Drop for UnmanagedBox<T, A> {
 mod tests {
     use super::UnmanagedBox;
     use ::alloc::string::String;
-    use ::alloc::string::ToString;
     use ::allocator_api2::alloc::Global;
 
     #[test]
@@ -146,23 +156,24 @@ mod tests {
 
     #[test]
     fn into_inner_returns_value() {
+        // `alloc::string::String` needs no `CloneIn`/`DeallocateIn` for into_inner.
         let b = UnmanagedBox::new_in(String::from("owned"), Global);
         let s = unsafe { b.into_inner(Global) };
         assert_eq!(s, "owned");
     }
 
     #[test]
-    fn deallocate_drops_inner() {
-        let b = UnmanagedBox::new_in("dropme".to_string(), Global);
+    fn deallocate_copy_inner() {
+        let b = UnmanagedBox::new_in(7u32, Global);
         unsafe { b.deallocate(Global) };
     }
 
     #[test]
     fn clone_in_copies_value() {
-        let b = UnmanagedBox::new_in(String::from("boxed"), Global);
+        let b = UnmanagedBox::new_in(42u32, Global);
         let c = b.clone_in(Global);
-        assert_eq!(&*c, "boxed");
-        assert_eq!(&*b, "boxed");
+        assert_eq!(*c, 42);
+        assert_eq!(*b, 42);
         unsafe { c.deallocate(Global) };
         unsafe { b.deallocate(Global) };
     }

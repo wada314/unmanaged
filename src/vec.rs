@@ -12,7 +12,7 @@ use ::core::ops::DerefMut;
 use ::core::ptr::{self, NonNull};
 use ::core::slice;
 
-use crate::traits::{CloneIn, DeallocateIn, ToOwnedIn};
+use crate::traits::{CloneIn, DeallocateIn, DefaultIn, ToOwnedIn};
 
 /// A contiguous growable array that does not store an allocator instance.
 ///
@@ -173,6 +173,13 @@ where
     }
 }
 
+impl<T, A: Allocator> DefaultIn<A> for UnmanagedVec<T, A> {
+    #[inline]
+    fn default_in(alloc: A) -> Self {
+        UnmanagedVec::new(alloc)
+    }
+}
+
 impl<T, A> CloneIn<A> for UnmanagedVec<T, A>
 where
     T: CloneIn<A>,
@@ -272,7 +279,6 @@ impl<'a, T, A: Allocator> Drop for VecGuard<'a, T, A> {
 mod tests {
     use super::UnmanagedVec;
     use crate::traits::ToOwnedIn;
-    use ::alloc::string::String;
     use ::allocator_api2::alloc::Global;
 
     #[test]
@@ -294,7 +300,7 @@ mod tests {
 
     #[test]
     fn empty_vec_deallocates() {
-        let v = UnmanagedVec::<String, Global>::new(Global);
+        let v = UnmanagedVec::<u32, Global>::new(Global);
         unsafe { v.deallocate(Global) };
     }
 

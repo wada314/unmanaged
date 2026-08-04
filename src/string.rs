@@ -19,7 +19,7 @@ use ::core::ops::Deref;
 use ::core::ops::DerefMut;
 use ::core::str;
 
-use crate::traits::{CloneIn, DeallocateIn, ToOwnedIn};
+use crate::traits::{CloneIn, DeallocateIn, DefaultIn, ToOwnedIn};
 use crate::vec::UnmanagedVec;
 
 /// A growable, allocator-generic UTF-8 string, backed by a `Vec<u8, A>`.
@@ -315,6 +315,13 @@ impl<A: Allocator> ToOwnedIn<A> for str {
     #[inline]
     fn to_owned_in(&self, alloc: A) -> UnmanagedString<A> {
         UnmanagedString::from_string(String::from_str_in(self, alloc))
+    }
+}
+
+impl<A: Allocator> DefaultIn<A> for UnmanagedString<A> {
+    #[inline]
+    fn default_in(alloc: A) -> Self {
+        UnmanagedString::new(alloc)
     }
 }
 
