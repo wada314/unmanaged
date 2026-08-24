@@ -68,7 +68,7 @@ pub trait DeallocateIn<A: Allocator> {
     /// # Safety
     ///
     /// `alloc` must own every buffer that `self` still holds.
-    unsafe fn deallocate_in(self, alloc: A);
+    unsafe fn deallocate_in(self, alloc: &A);
 }
 
 /// Bitwise-copy payloads: `alloc` is irrelevant.
@@ -94,5 +94,5 @@ where
 /// Bitwise-copy payloads own no heap buffers.
 impl<T: Copy, A: Allocator> DeallocateIn<A> for T {
     #[inline]
-    unsafe fn deallocate_in(self, _alloc: A) {}
+    unsafe fn deallocate_in(self, _alloc: &A) {}
 }

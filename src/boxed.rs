@@ -64,12 +64,16 @@ impl<T, A: Allocator> UnmanagedBox<T, A> {
     /// # Safety
     ///
     /// `alloc` must own this box's allocation and the inner value's buffers.
-    pub unsafe fn deallocate(self, alloc: A)
+    pub unsafe fn deallocate(self, alloc: &A)
     where
         T: DeallocateIn<A>,
-        A: Clone,
     {
-        let value = unsafe { self.into_inner(alloc.clone()) };
+        let ptr = self.ptr.as_ptr();
+        mem::forget(self);
+        // `alloc` is `&A`, so this is `Box<T, &A>`, not `Box<T, A>` — a
+        // different allocator type than the one used to allocate the slot.
+        let b = unsafe { Box::<T, &A>::from_raw_in(ptr, alloc) };
+        let value = Box::into_inner(b);
         // SAFETY: same `alloc` obligation as this method.
         unsafe { value.deallocate_in(alloc) };
     }
@@ -108,10 +112,10 @@ where
 impl<T, A> DeallocateIn<A> for UnmanagedBox<T, A>
 where
     T: DeallocateIn<A>,
-    A: Allocator + Clone,
+    A: Allocator,
 {
     #[inline]
-    unsafe fn deallocate_in(self, alloc: A) {
+    unsafe fn deallocate_in(self, alloc: &A) {
         // SAFETY: forwarded to the caller's obligation on `alloc`.
         unsafe { self.deallocate(alloc) };
     }
@@ -151,7 +155,7 @@ mod tests {
         assert_eq!(*b, 41);
         *b += 1;
         assert_eq!(*b, 42);
-        unsafe { b.deallocate(Global) };
+        unsafe { b.deallocate(&Global) };
     }
 
     #[test]
@@ -165,7 +169,7 @@ mod tests {
     #[test]
     fn deallocate_copy_inner() {
         let b = UnmanagedBox::new_in(7u32, Global);
-        unsafe { b.deallocate(Global) };
+        unsafe { b.deallocate(&Global) };
     }
 
     #[test]
@@ -174,8 +178,8 @@ mod tests {
         let c = b.clone_in(Global);
         assert_eq!(*c, 42);
         assert_eq!(*b, 42);
-        unsafe { c.deallocate(Global) };
-        unsafe { b.deallocate(Global) };
+        unsafe { c.deallocate(&Global) };
+        unsafe { b.deallocate(&Global) };
     }
 
     #[test]
@@ -183,7 +187,7 @@ mod tests {
         use crate::UnmanagedString;
         let inner = UnmanagedString::from_string(crate::String::from_str_in("inner", Global));
         let b = UnmanagedBox::new_in(inner, Global);
-        unsafe { b.deallocate(Global) };
+        unsafe { b.deallocate(&Global) };
     }
 
     #[test]

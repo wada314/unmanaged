@@ -119,10 +119,9 @@ impl<T, A: Allocator> UnmanagedVec<T, A> {
     /// # Safety
     ///
     /// `alloc` must own this vector's buffer and every live element's buffers.
-    pub unsafe fn deallocate(self, alloc: A)
+    pub unsafe fn deallocate(self, alloc: &A)
     where
         T: DeallocateIn<A>,
-        A: Clone,
     {
         let ptr = self.ptr.as_ptr();
         let len = self.len;
@@ -132,9 +131,11 @@ impl<T, A: Allocator> UnmanagedVec<T, A> {
             // SAFETY: `ptr` holds `len` initialized elements; each is read once.
             let elem = unsafe { ptr::read(ptr.add(i)) };
             // SAFETY: same `alloc` obligation as this method.
-            unsafe { elem.deallocate_in(alloc.clone()) };
+            unsafe { elem.deallocate_in(alloc) };
         }
-        // Length 0 so `Vec` does not drop elements again.
+        // Length 0 so `Vec` does not drop elements again. `alloc` is `&A`, so
+        // this is `Vec<T, &A>`, not `Vec<T, A>` — a different allocator type
+        // than the one used to grow the buffer.
         let _ = unsafe { Vec::from_raw_parts_in(ptr, 0, cap, alloc) };
     }
 
@@ -147,11 +148,12 @@ impl<T, A: Allocator> UnmanagedVec<T, A> {
     /// # Safety
     ///
     /// `self.len` must be `0`. `alloc` must own this vector's buffer.
-    pub unsafe fn deallocate_buffer(self, alloc: A) {
+    pub unsafe fn deallocate_buffer(self, alloc: &A) {
         debug_assert_eq!(self.len, 0);
         let ptr = self.ptr.as_ptr();
         let cap = self.cap;
         mem::forget(self);
+        // `alloc` is `&A`, so this is `Vec<T, &A>`, not `Vec<T, A>`.
         let _ = unsafe { Vec::from_raw_parts_in(ptr, 0, cap, alloc) };
     }
 }
@@ -194,10 +196,10 @@ where
 impl<T, A> DeallocateIn<A> for UnmanagedVec<T, A>
 where
     T: DeallocateIn<A>,
-    A: Allocator + Clone,
+    A: Allocator,
 {
     #[inline]
-    unsafe fn deallocate_in(self, alloc: A) {
+    unsafe fn deallocate_in(self, alloc: &A) {
         // SAFETY: forwarded to the caller's obligation on `alloc`.
         unsafe { self.deallocate(alloc) };
     }
@@ -295,13 +297,13 @@ mod tests {
         assert_eq!(v.len(), 4);
         assert_eq!(&v[..], &[1, 2, 3, 4]);
         assert_eq!(v.iter().sum::<u32>(), 10);
-        unsafe { v.deallocate(Global) };
+        unsafe { v.deallocate(&Global) };
     }
 
     #[test]
     fn empty_vec_deallocates() {
         let v = UnmanagedVec::<u32, Global>::new(Global);
-        unsafe { v.deallocate(Global) };
+        unsafe { v.deallocate(&Global) };
     }
 
     #[test]
@@ -310,7 +312,7 @@ mod tests {
         vec.extend([10, 20, 30]);
         let v = UnmanagedVec::from_vec(vec);
         assert_eq!(&v[..], &[10, 20, 30]);
-        unsafe { v.deallocate(Global) };
+        unsafe { v.deallocate(&Global) };
     }
 
     #[test]
@@ -327,8 +329,8 @@ mod tests {
         }
         assert_eq!(a, b);
         assert_eq!(format!("{:?}", a), "[104, 105]");
-        unsafe { a.deallocate(Global) };
-        unsafe { b.deallocate(Global) };
+        unsafe { a.deallocate(&Global) };
+        unsafe { b.deallocate(&Global) };
     }
 
     #[test]
@@ -341,15 +343,15 @@ mod tests {
         let c = v.clone_in(Global);
         assert_eq!(&c[..], &[1, 2, 3]);
         assert_eq!(&v[..], &[1, 2, 3]);
-        unsafe { c.deallocate(Global) };
-        unsafe { v.deallocate(Global) };
+        unsafe { c.deallocate(&Global) };
+        unsafe { v.deallocate(&Global) };
     }
 
     #[test]
     fn slice_to_owned_in_copies_elements() {
         let owned: UnmanagedVec<u32, Global> = [1u32, 2, 3].as_slice().to_owned_in(Global);
         assert_eq!(&owned[..], &[1, 2, 3]);
-        unsafe { owned.deallocate(Global) };
+        unsafe { owned.deallocate(&Global) };
     }
 
     #[test]
@@ -370,8 +372,8 @@ mod tests {
         let c = v.clone_in(Global);
         assert_eq!(&*c[0], "a");
         assert_eq!(&*c[1], "b");
-        unsafe { c.deallocate(Global) };
-        unsafe { v.deallocate(Global) };
+        unsafe { c.deallocate(&Global) };
+        unsafe { v.deallocate(&Global) };
     }
 
     #[test]

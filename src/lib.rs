@@ -6,7 +6,7 @@
 //!
 //! Because the allocator is absent from the collection itself, these types
 //! cannot free themselves through the normal [`Drop`] mechanism. Instead they
-//! must be released explicitly via a `deallocate(self, alloc)` method. Dropping
+//! must be released explicitly via a `deallocate(self, &alloc)` method. Dropping
 //! such a value implicitly panics at runtime (see [`vec`]).
 //!
 //! Copying allocates a **new** buffer in a caller-supplied allocator via

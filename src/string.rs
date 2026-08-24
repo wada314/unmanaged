@@ -300,10 +300,7 @@ impl<A: Allocator> UnmanagedString<A> {
     /// # Safety
     ///
     /// `alloc` must own this string's buffer.
-    pub unsafe fn deallocate(self, alloc: A)
-    where
-        A: Clone,
-    {
+    pub unsafe fn deallocate(self, alloc: &A) {
         // `u8: DeallocateIn` — byte buffer only; no nested unmanaged elements.
         unsafe { self.bytes.deallocate(alloc) }
     }
@@ -332,9 +329,9 @@ impl<A: Allocator + Clone> CloneIn<A> for UnmanagedString<A> {
     }
 }
 
-impl<A: Allocator + Clone> DeallocateIn<A> for UnmanagedString<A> {
+impl<A: Allocator> DeallocateIn<A> for UnmanagedString<A> {
     #[inline]
-    unsafe fn deallocate_in(self, alloc: A) {
+    unsafe fn deallocate_in(self, alloc: &A) {
         // SAFETY: forwarded to the caller's obligation on `alloc`.
         unsafe { self.deallocate(alloc) };
     }
@@ -441,7 +438,7 @@ mod tests {
         }
         assert_eq!(&*s, "hello");
         assert_eq!(s.len(), 5);
-        unsafe { s.deallocate(Global) };
+        unsafe { s.deallocate(&Global) };
     }
 
     #[test]
@@ -455,7 +452,7 @@ mod tests {
             assert_eq!(g.pop(), Some('a'));
             assert_eq!(g.pop(), None);
         }
-        unsafe { s.deallocate(Global) };
+        unsafe { s.deallocate(&Global) };
     }
 
     #[test]
@@ -463,7 +460,7 @@ mod tests {
         let owned = String::from_str_in("roundtrip", Global);
         let s = UnmanagedString::from_string(owned);
         assert_eq!(&*s, "roundtrip");
-        unsafe { s.deallocate(Global) };
+        unsafe { s.deallocate(&Global) };
     }
 
     #[test]
@@ -473,8 +470,8 @@ mod tests {
         let c = s.clone_in(Global);
         assert_eq!(&*c, "clone me");
         assert_eq!(&*s, "clone me");
-        unsafe { c.deallocate(Global) };
-        unsafe { s.deallocate(Global) };
+        unsafe { c.deallocate(&Global) };
+        unsafe { s.deallocate(&Global) };
     }
 
     #[test]

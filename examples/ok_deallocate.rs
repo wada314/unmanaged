@@ -60,7 +60,7 @@ fn main() {
 
     // Release through the same borrowed allocator.
     // SAFETY: same allocator instance used for all growth above.
-    unsafe { v.deallocate(&alloc) };
+    unsafe { v.deallocate(&&alloc) };
 
     println!(
         "ok: grew via guard and deallocated; allocator ran {} allocation(s)",
