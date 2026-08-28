@@ -266,6 +266,18 @@ impl<A: Allocator> UnmanagedString<A> {
         }
     }
 
+    /// Wraps `bytes` as a string without checking UTF-8.
+    ///
+    /// # Safety
+    ///
+    /// [`Deref`] to [`str`] uses `from_utf8_unchecked`. If `bytes` is not
+    /// valid UTF-8, later `&str` views violate Rust's UTF-8 invariant.
+    /// protobuf `utf8_validation=NONE` decode uses this to copy wire bytes
+    /// unchanged.
+    pub unsafe fn from_utf8_unchecked(bytes: UnmanagedVec<u8, A>) -> Self {
+        Self { bytes }
+    }
+
     /// Returns the length of the string in bytes.
     pub fn len(&self) -> usize {
         self.bytes.len()
@@ -341,7 +353,8 @@ impl<A: Allocator> Deref for UnmanagedString<A> {
     type Target = str;
 
     fn deref(&self) -> &str {
-        // SAFETY: `bytes` is maintained as valid UTF-8 at all times.
+        // SAFETY: `from_utf8` keeps UTF-8. `from_utf8_unchecked` (protobuf
+        // `utf8_validation=NONE`) may store non-UTF-8 bytes presented as `&str`.
         unsafe { str::from_utf8_unchecked(&self.bytes) }
     }
 }
