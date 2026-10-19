@@ -1,7 +1,12 @@
 [package]
 name = "unmanaged"
 version = "0.1.0"
+authors = ["Shohei Wada <pc@wada314.jp>"]
 edition = "2021"
+license = "Apache-2.0"
+description = "Heap containers that do not store the allocator inline and panic on implicit Drop."
+repository = "https://github.com/wada314/unmanaged"
+readme = "README.md"
 
 [dependencies]
 allocator-api2 = { version = "0.2", default-features = false, features = ["alloc"] }
