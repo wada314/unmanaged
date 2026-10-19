@@ -3,6 +3,9 @@
 
 use ::allocator_api2::alloc::Allocator;
 use ::allocator_api2::vec::Vec;
+use ::core::borrow::Borrow;
+use ::core::borrow::BorrowMut;
+use ::core::cmp::Ordering;
 use ::core::fmt;
 use ::core::hash::{Hash, Hasher};
 use ::core::marker::PhantomData;
@@ -25,9 +28,12 @@ use crate::traits::{CloneIn, DeallocateIn, DefaultIn, ToOwnedIn};
 /// * Copy via [`UnmanagedVec::clone_in`] (allocates a new buffer in the given allocator).
 /// * Release via [`UnmanagedVec::deallocate`].
 ///
+/// `Send` and `Sync` follow `T` and `A`, matching [`Vec`].
+///
 /// # Dropping
 ///
 /// Dropping implicitly panics. Always release through [`deallocate`](Self::deallocate).
+#[must_use = "an UnmanagedVec must be released via `deallocate`; dropping it panics"]
 pub struct UnmanagedVec<T, A: Allocator> {
     ptr: NonNull<T>,
     len: usize,
@@ -64,6 +70,19 @@ impl<T, A: Allocator> UnmanagedVec<T, A> {
     /// Returns the number of elements the vector can hold without reallocating.
     pub const fn capacity(&self) -> usize {
         self.cap
+    }
+
+    /// Rebuilds an allocator-carrying [`Vec`] from this vector.
+    ///
+    /// # Safety
+    ///
+    /// `alloc` must own this vector's buffer.
+    pub unsafe fn into_vec(self, alloc: A) -> Vec<T, A> {
+        let ptr = self.ptr.as_ptr();
+        let len = self.len;
+        let cap = self.cap;
+        mem::forget(self);
+        unsafe { Vec::from_raw_parts_in(ptr, len, cap, alloc) }
     }
 
     /// Allocates a copy of this vector in `alloc`.
@@ -249,6 +268,151 @@ impl<T: Hash, A: Allocator> Hash for UnmanagedVec<T, A> {
     }
 }
 
+impl<T: PartialOrd, A: Allocator> PartialOrd for UnmanagedVec<T, A> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        (**self).partial_cmp(&**other)
+    }
+}
+
+impl<T: Ord, A: Allocator> Ord for UnmanagedVec<T, A> {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        (**self).cmp(&**other)
+    }
+}
+
+impl<T, U, A> PartialEq<[U]> for UnmanagedVec<T, A>
+where
+    T: PartialEq<U>,
+    A: Allocator,
+{
+    #[inline]
+    fn eq(&self, other: &[U]) -> bool {
+        self[..] == other[..]
+    }
+}
+
+impl<T, U, A> PartialEq<UnmanagedVec<U, A>> for [T]
+where
+    T: PartialEq<U>,
+    A: Allocator,
+{
+    #[inline]
+    fn eq(&self, other: &UnmanagedVec<U, A>) -> bool {
+        self[..] == other[..]
+    }
+}
+
+impl<T, U, A> PartialEq<&[U]> for UnmanagedVec<T, A>
+where
+    T: PartialEq<U>,
+    A: Allocator,
+{
+    #[inline]
+    fn eq(&self, other: &&[U]) -> bool {
+        self[..] == other[..]
+    }
+}
+
+impl<T, U, A> PartialEq<UnmanagedVec<U, A>> for &[T]
+where
+    T: PartialEq<U>,
+    A: Allocator,
+{
+    #[inline]
+    fn eq(&self, other: &UnmanagedVec<U, A>) -> bool {
+        self[..] == other[..]
+    }
+}
+
+impl<T, U, A, const N: usize> PartialEq<[U; N]> for UnmanagedVec<T, A>
+where
+    T: PartialEq<U>,
+    A: Allocator,
+{
+    #[inline]
+    fn eq(&self, other: &[U; N]) -> bool {
+        self[..] == other[..]
+    }
+}
+
+impl<T, U, A, const N: usize> PartialEq<UnmanagedVec<U, A>> for [T; N]
+where
+    T: PartialEq<U>,
+    A: Allocator,
+{
+    #[inline]
+    fn eq(&self, other: &UnmanagedVec<U, A>) -> bool {
+        self[..] == other[..]
+    }
+}
+
+impl<T, A: Allocator> AsRef<[T]> for UnmanagedVec<T, A> {
+    #[inline]
+    fn as_ref(&self) -> &[T] {
+        self
+    }
+}
+
+impl<T, A: Allocator> AsMut<[T]> for UnmanagedVec<T, A> {
+    #[inline]
+    fn as_mut(&mut self) -> &mut [T] {
+        self
+    }
+}
+
+impl<T, A: Allocator> Borrow<[T]> for UnmanagedVec<T, A> {
+    #[inline]
+    fn borrow(&self) -> &[T] {
+        self
+    }
+}
+
+impl<T, A: Allocator> BorrowMut<[T]> for UnmanagedVec<T, A> {
+    #[inline]
+    fn borrow_mut(&mut self) -> &mut [T] {
+        self
+    }
+}
+
+impl<'a, T, A: Allocator> IntoIterator for &'a UnmanagedVec<T, A> {
+    type Item = &'a T;
+    type IntoIter = slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a, T, A: Allocator> IntoIterator for &'a mut UnmanagedVec<T, A> {
+    type Item = &'a mut T;
+    type IntoIter = slice::IterMut<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
+// Safety: the vector uniquely owns `len` initialized elements and a buffer
+// allocated by `A`. The allocator instance is not stored; `A: Send` matches
+// `Vec<T, A>`.
+unsafe impl<T, A> Send for UnmanagedVec<T, A>
+where
+    T: Send,
+    A: Allocator + Send,
+{
+}
+
+// Safety: sharing the buffer is sound when `T` and `A` are `Sync`, matching
+// `Vec<T, A>`.
+unsafe impl<T, A> Sync for UnmanagedVec<T, A>
+where
+    T: Sync,
+    A: Allocator + Sync,
+{
+}
+
 /// Temporary full [`Vec<T, A>`] API over an [`UnmanagedVec`].
 pub struct VecGuard<'a, T, A: Allocator> {
     vec: ManuallyDrop<Vec<T, A>>,
@@ -381,5 +545,39 @@ mod tests {
     fn implicit_drop_panics() {
         let mut v = UnmanagedVec::<u32, Global>::new(Global);
         unsafe { v.with_alloc(Global) }.push(1);
+    }
+
+    #[test]
+    fn send_sync_when_element_is() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<UnmanagedVec<u32, Global>>();
+    }
+
+    #[test]
+    fn ord_eq_iter_and_into_vec() {
+        let mut a = UnmanagedVec::<u32, Global>::new(Global);
+        let mut b = UnmanagedVec::<u32, Global>::new(Global);
+        {
+            unsafe { a.with_alloc(Global) }.extend([1, 2]);
+            unsafe { b.with_alloc(Global) }.extend([1, 3]);
+        }
+        assert!(a < b);
+        assert!(a == [1, 2]);
+        assert!([1, 3] == b);
+        let slice: &[u32] = &[1, 2];
+        assert!(a == slice);
+        assert!(slice == a);
+        let mut sum = 0;
+        for x in &a {
+            sum += x;
+        }
+        for x in &mut a {
+            *x += 1;
+        }
+        assert_eq!(sum, 3);
+        assert_eq!(&a[..], &[2, 3]);
+        let owned = unsafe { a.into_vec(Global) };
+        assert_eq!(owned.as_slice(), &[2, 3]);
+        unsafe { b.deallocate(&Global) };
     }
 }
