@@ -25,6 +25,13 @@ use crate::traits::{CloneIn, DeallocateIn, DefaultIn, ToOwnedIn};
 use crate::vec::UnmanagedVec;
 
 /// A growable, allocator-generic UTF-8 string, backed by a `Vec<u8, A>`.
+///
+/// This type stores `A` inline. [`Drop`] frees the buffer through that
+/// allocator, and methods such as [`push`](Self::push) and [`reserve`](Self::reserve)
+/// use the stored allocator instead of taking one as an argument.
+///
+/// [`UnmanagedString`] is the instance-less counterpart: it does not store `A`,
+/// grows through [`StringGuard`], and panics if dropped.
 pub struct String<A: Allocator = Global> {
     // Invariant: `vec` always holds valid UTF-8.
     vec: Vec<u8, A>,
@@ -333,7 +340,15 @@ impl<'a, A: Allocator> Extend<&'a str> for String<A> {
 
 /// A contiguous, growable UTF-8 string that does not store an allocator instance.
 ///
-/// `Send` and `Sync` follow `A`, matching [`UnmanagedVec`](crate::UnmanagedVec) of `u8`.
+/// `Send` and `Sync` follow `A`, matching [`UnmanagedVec`] of `u8`.
+///
+/// Reading via [`Deref`] to [`prim@str`] needs no allocator. Growth goes through
+/// [`with_alloc`](Self::with_alloc), which yields a [`StringGuard`]. [`String`]
+/// is the variant that stores the allocator and frees itself on [`Drop`].
+///
+/// # Dropping
+///
+/// Dropping implicitly panics. Release the buffer with [`deallocate`](Self::deallocate).
 #[must_use = "an UnmanagedString must be released via `deallocate`; dropping it panics"]
 pub struct UnmanagedString<A: Allocator> {
     // Invariant: `bytes` always holds valid UTF-8.
@@ -371,7 +386,7 @@ impl<A: Allocator> UnmanagedString<A> {
     ///
     /// # Safety
     ///
-    /// [`Deref`] to [`str`] uses `from_utf8_unchecked`. If `bytes` is not
+    /// [`Deref`] to [`prim@str`] uses `from_utf8_unchecked`. If `bytes` is not
     /// valid UTF-8, later `&str` views violate Rust's UTF-8 invariant.
     /// protobuf `utf8_validation=NONE` decode uses this to copy wire bytes
     /// unchanged.
@@ -421,6 +436,8 @@ impl<A: Allocator> UnmanagedString<A> {
         <str as ToOwnedIn<A>>::to_owned_in(self, alloc)
     }
 
+    /// Borrows the string together with `alloc`, yielding a [`StringGuard`].
+    ///
     /// # Safety
     ///
     /// `alloc` must own this string's buffer.
@@ -433,6 +450,8 @@ impl<A: Allocator> UnmanagedString<A> {
         }
     }
 
+    /// Frees this string's buffer.
+    ///
     /// # Safety
     ///
     /// `alloc` must own this string's buffer.
@@ -575,6 +594,10 @@ impl<A: Allocator> Ord for UnmanagedString<A> {
 }
 
 /// Temporary full [`String<A>`] API over an [`UnmanagedString`].
+///
+/// On drop, the guard writes the buffer's pointer, length, and capacity back
+/// into the [`UnmanagedString`]. It does not free the buffer. [`String::clear`]
+/// and [`String::truncate`] shorten that same buffer while the guard is alive.
 pub struct StringGuard<'a, A: Allocator> {
     string: ManuallyDrop<String<A>>,
     origin: &'a mut UnmanagedVec<u8, A>,

@@ -414,6 +414,15 @@ where
 }
 
 /// Temporary full [`Vec<T, A>`] API over an [`UnmanagedVec`].
+///
+/// On drop, the guard writes the vector's pointer, length, and capacity back
+/// into the [`UnmanagedVec`]. It does not free the buffer.
+///
+/// Methods that drop elements ([`Vec::clear`], [`Vec::truncate`], [`Vec::drain`])
+/// run `T`'s [`Drop`] while the guard is alive. Unmanaged elements panic on
+/// that path. Pop them out and release each one with [`DeallocateIn`], then
+/// [`UnmanagedVec::deallocate_buffer`] for the empty buffer, or release the
+/// whole vector with [`UnmanagedVec::deallocate`].
 pub struct VecGuard<'a, T, A: Allocator> {
     vec: ManuallyDrop<Vec<T, A>>,
     origin: &'a mut UnmanagedVec<T, A>,

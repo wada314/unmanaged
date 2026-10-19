@@ -21,6 +21,12 @@ use crate::traits::{CloneIn, DeallocateIn, DefaultIn};
 /// Inline size is one pointer plus [`PhantomData<A>`] (ZST).
 ///
 /// `Send` and `Sync` follow `T` and `A`, matching [`Box`].
+///
+/// # Dropping
+///
+/// Dropping implicitly panics. Release the allocation with
+/// [`deallocate`](Self::deallocate), or take the value out with
+/// [`into_inner`](Self::into_inner).
 #[must_use = "an UnmanagedBox must be released via `deallocate`/`into_inner`; dropping it panics"]
 pub struct UnmanagedBox<T, A: Allocator> {
     ptr: NonNull<T>,
@@ -87,6 +93,11 @@ impl<T, A: Allocator> UnmanagedBox<T, A> {
         unsafe { value.deallocate_in(alloc) };
     }
 
+    /// Moves the inner value out and frees the box slot.
+    ///
+    /// The returned `T` is not dropped here. When `T` itself owns unmanaged
+    /// buffers, release those separately.
+    ///
     /// # Safety
     ///
     /// `alloc` must own this box's allocation.
