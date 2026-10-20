@@ -1,8 +1,12 @@
 # unmanaged
 
-`no_std` containers that need `alloc` and keep the allocator out of the value: `UnmanagedBox`, `UnmanagedVec`, and `UnmanagedString`. A parent owns one allocator and shares it across fields, so each field stores only the buffer (a vec or string also stores its length and capacity).
+`Vec<T, A>` and `Box<T, A>` store their allocator in the value. A struct that holds many of them stores a separate copy of `A` in every field. When `A` is larger than a zero-sized type, that repetition is wasted space: one allocator owned by the parent could serve every field.
 
-The value cannot free itself. Dropping it panics. Pass the allocator back in when you grow the buffer or release it.
+`unmanaged` removes that copy. `UnmanagedBox`, `UnmanagedVec`, and `UnmanagedString` keep the allocator *type*, so allocation and free stay type-checked, but they do not store the allocator *instance*. The parent owns one `A` and passes it in only when a field needs to grow or be freed. What remains in the field is the buffer. A vector or string also stores its length and capacity.
+
+A zero-sized allocator such as `Global` occupies no space either way. The saving appears when `A` carries state, for example an arena.
+
+These types are `no_std` and require `alloc`. The value no longer knows how to free itself, so dropping it panics. Release it with `deallocate`, and pass the same allocator that owns the buffer. Nested unmanaged values are freed by that same call through `DeallocateIn`.
 
 ## Install
 
@@ -37,8 +41,6 @@ fn main() {
 ```
 
 A move-only allocator works the same way when you lend `&alloc`, because `&A` implements `Allocator`. That pattern is in `examples/ok_deallocate.rs`. `examples/bad_implicit_drop.rs` panics on purpose by dropping a value without `deallocate`.
-
-Nested unmanaged elements are released by the outer `deallocate` through `DeallocateIn`.
 
 ## License
 
