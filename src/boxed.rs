@@ -3,6 +3,11 @@
 
 use ::allocator_api2::alloc::Allocator;
 use ::allocator_api2::boxed::Box;
+use ::core::borrow::Borrow;
+use ::core::borrow::BorrowMut;
+use ::core::cmp::Ordering;
+use ::core::fmt;
+use ::core::hash::{Hash, Hasher};
 use ::core::marker::PhantomData;
 use ::core::mem;
 use ::core::ops::Deref;
@@ -14,6 +19,14 @@ use crate::traits::{CloneIn, DeallocateIn, DefaultIn};
 /// An owned heap allocation that does not store an allocator instance.
 ///
 /// Inline size is one pointer plus [`PhantomData<A>`] (ZST).
+///
+/// `Send` and `Sync` follow `T` and `A`, matching [`Box`].
+///
+/// # Dropping
+///
+/// Dropping implicitly panics. Release the allocation with
+/// [`deallocate`](Self::deallocate), or take the value out with
+/// [`into_inner`](Self::into_inner).
 #[must_use = "an UnmanagedBox must be released via `deallocate`/`into_inner`; dropping it panics"]
 pub struct UnmanagedBox<T, A: Allocator> {
     ptr: NonNull<T>,
@@ -50,10 +63,12 @@ impl<T, A: Allocator> UnmanagedBox<T, A> {
         Self::new_in((**self).clone_in(alloc.clone()), alloc)
     }
 
+    /// Rebuilds an allocator-carrying [`Box`] from this value.
+    ///
     /// # Safety
     ///
     /// `alloc` must own this box's allocation.
-    unsafe fn into_box(self, alloc: A) -> Box<T, A> {
+    pub unsafe fn into_box(self, alloc: A) -> Box<T, A> {
         let ptr = self.ptr.as_ptr();
         mem::forget(self);
         unsafe { Box::from_raw_in(ptr, alloc) }
@@ -78,6 +93,11 @@ impl<T, A: Allocator> UnmanagedBox<T, A> {
         unsafe { value.deallocate_in(alloc) };
     }
 
+    /// Moves the inner value out and frees the box slot.
+    ///
+    /// The returned `T` is not dropped here. When `T` itself owns unmanaged
+    /// buffers, release those separately.
+    ///
     /// # Safety
     ///
     /// `alloc` must own this box's allocation.
@@ -135,6 +155,94 @@ impl<T, A: Allocator> DerefMut for UnmanagedBox<T, A> {
     }
 }
 
+// Safety: the box uniquely owns `T` and the allocation belongs to `A`.
+// The allocator instance is not stored; `A: Send` matches `Box<T, A>`.
+unsafe impl<T, A> Send for UnmanagedBox<T, A>
+where
+    T: Send,
+    A: Allocator + Send,
+{
+}
+
+// Safety: sharing the allocation is sound when `T` and `A` are `Sync`,
+// matching `Box<T, A>`.
+unsafe impl<T, A> Sync for UnmanagedBox<T, A>
+where
+    T: Sync,
+    A: Allocator + Sync,
+{
+}
+
+impl<T: fmt::Debug, A: Allocator> fmt::Debug for UnmanagedBox<T, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&**self, f)
+    }
+}
+
+impl<T: fmt::Display, A: Allocator> fmt::Display for UnmanagedBox<T, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&**self, f)
+    }
+}
+
+impl<T: PartialEq, A: Allocator> PartialEq for UnmanagedBox<T, A> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl<T: Eq, A: Allocator> Eq for UnmanagedBox<T, A> {}
+
+impl<T: PartialOrd, A: Allocator> PartialOrd for UnmanagedBox<T, A> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        (**self).partial_cmp(&**other)
+    }
+}
+
+impl<T: Ord, A: Allocator> Ord for UnmanagedBox<T, A> {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        (**self).cmp(&**other)
+    }
+}
+
+impl<T: Hash, A: Allocator> Hash for UnmanagedBox<T, A> {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (**self).hash(state);
+    }
+}
+
+impl<T, A: Allocator> AsRef<T> for UnmanagedBox<T, A> {
+    #[inline]
+    fn as_ref(&self) -> &T {
+        self
+    }
+}
+
+impl<T, A: Allocator> AsMut<T> for UnmanagedBox<T, A> {
+    #[inline]
+    fn as_mut(&mut self) -> &mut T {
+        self
+    }
+}
+
+impl<T, A: Allocator> Borrow<T> for UnmanagedBox<T, A> {
+    #[inline]
+    fn borrow(&self) -> &T {
+        self
+    }
+}
+
+impl<T, A: Allocator> BorrowMut<T> for UnmanagedBox<T, A> {
+    #[inline]
+    fn borrow_mut(&mut self) -> &mut T {
+        self
+    }
+}
+
 impl<T, A: Allocator> Drop for UnmanagedBox<T, A> {
     fn drop(&mut self) {
         panic!(
@@ -148,6 +256,7 @@ mod tests {
     use super::UnmanagedBox;
     use ::alloc::string::String;
     use ::allocator_api2::alloc::Global;
+    use ::core::hash::Hasher;
 
     #[test]
     fn new_deref_and_deallocate() {
@@ -194,5 +303,50 @@ mod tests {
     #[should_panic(expected = "must be released")]
     fn implicit_drop_panics() {
         let _b = UnmanagedBox::new_in(7u32, Global);
+    }
+
+    #[test]
+    fn send_sync_when_inner_is() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<UnmanagedBox<u32, Global>>();
+    }
+
+    #[test]
+    fn cmp_fmt_and_into_box() {
+        use ::alloc::format;
+        use ::core::borrow::Borrow;
+        use ::core::hash::Hash;
+
+        let b = UnmanagedBox::new_in(7u32, Global);
+        let c = UnmanagedBox::new_in(8u32, Global);
+        assert_eq!(b, b);
+        assert!(b < c);
+        assert_eq!(format!("{b}"), "7");
+        assert_eq!(format!("{b:?}"), "7");
+        assert_eq!(Borrow::<u32>::borrow(&b), &7);
+        assert_eq!(AsRef::<u32>::as_ref(&b), &7);
+
+        let mut hb = HasherStub(0);
+        let mut hc = HasherStub(0);
+        b.hash(&mut hb);
+        7u32.hash(&mut hc);
+        assert_eq!(hb.finish(), hc.finish());
+
+        let boxed = unsafe { b.into_box(Global) };
+        assert_eq!(*boxed, 7);
+        unsafe { c.deallocate(&Global) };
+    }
+
+    struct HasherStub(u64);
+
+    impl Hasher for HasherStub {
+        fn finish(&self) -> u64 {
+            self.0
+        }
+        fn write(&mut self, bytes: &[u8]) {
+            for byte in bytes {
+                self.0 = self.0.wrapping_mul(31).wrapping_add(u64::from(*byte));
+            }
+        }
     }
 }

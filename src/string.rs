@@ -11,9 +11,11 @@ use ::allocator_api2::alloc::Allocator;
 use ::allocator_api2::alloc::Global;
 use ::allocator_api2::vec::Vec;
 use ::core::borrow::Borrow;
+use ::core::cmp::Ordering;
 use ::core::cmp::PartialEq;
 use ::core::fmt;
 use ::core::hash::{Hash, Hasher};
+use ::core::iter::Extend;
 use ::core::mem::ManuallyDrop;
 use ::core::ops::Deref;
 use ::core::ops::DerefMut;
@@ -23,6 +25,13 @@ use crate::traits::{CloneIn, DeallocateIn, DefaultIn, ToOwnedIn};
 use crate::vec::UnmanagedVec;
 
 /// A growable, allocator-generic UTF-8 string, backed by a `Vec<u8, A>`.
+///
+/// This type stores `A` inline. [`Drop`] frees the buffer through that
+/// allocator, and methods such as [`push`](Self::push) and [`reserve`](Self::reserve)
+/// use the stored allocator instead of taking one as an argument.
+///
+/// [`UnmanagedString`] is the instance-less counterpart: it does not store `A`,
+/// grows through [`StringGuard`], and panics if dropped.
 pub struct String<A: Allocator = Global> {
     // Invariant: `vec` always holds valid UTF-8.
     vec: Vec<u8, A>,
@@ -47,6 +56,25 @@ impl<A: Allocator> String<A> {
     pub fn from_str_in(s: &str, alloc: A) -> Self {
         let mut vec = Vec::with_capacity_in(s.len(), alloc);
         vec.extend_from_slice(s.as_bytes());
+        Self { vec }
+    }
+
+    /// Converts `vec` into a string if it is valid UTF-8.
+    ///
+    /// On failure, returns the original vector.
+    pub fn from_utf8(vec: Vec<u8, A>) -> Result<Self, Vec<u8, A>> {
+        match str::from_utf8(&vec) {
+            Ok(_) => Ok(Self { vec }),
+            Err(_) => Err(vec),
+        }
+    }
+
+    /// Wraps `vec` as a string without checking UTF-8.
+    ///
+    /// # Safety
+    ///
+    /// `vec` must contain valid UTF-8.
+    pub unsafe fn from_utf8_unchecked(vec: Vec<u8, A>) -> Self {
         Self { vec }
     }
 
@@ -232,7 +260,95 @@ impl<A: Allocator> PartialEq<&str> for String<A> {
     }
 }
 
+impl<A: Allocator> PartialEq<String<A>> for str {
+    #[inline]
+    fn eq(&self, other: &String<A>) -> bool {
+        self == other.as_str()
+    }
+}
+
+impl<A: Allocator> PartialEq<String<A>> for &str {
+    #[inline]
+    fn eq(&self, other: &String<A>) -> bool {
+        *self == other.as_str()
+    }
+}
+
+impl<A: Allocator> PartialOrd for String<A> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<A: Allocator> Ord for String<A> {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+impl<A: Allocator> Hash for String<A> {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
+    }
+}
+
+impl<A> Clone for String<A>
+where
+    A: Allocator + Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            vec: self.vec.clone(),
+        }
+    }
+}
+
+impl<A: Allocator> fmt::Write for String<A> {
+    #[inline]
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.push_str(s);
+        Ok(())
+    }
+}
+
+impl<A: Allocator> Extend<char> for String<A> {
+    fn extend<I: IntoIterator<Item = char>>(&mut self, iter: I) {
+        for ch in iter {
+            self.push(ch);
+        }
+    }
+}
+
+impl<'a, A: Allocator> Extend<&'a char> for String<A> {
+    fn extend<I: IntoIterator<Item = &'a char>>(&mut self, iter: I) {
+        for ch in iter {
+            self.push(*ch);
+        }
+    }
+}
+
+impl<'a, A: Allocator> Extend<&'a str> for String<A> {
+    fn extend<I: IntoIterator<Item = &'a str>>(&mut self, iter: I) {
+        for s in iter {
+            self.push_str(s);
+        }
+    }
+}
+
 /// A contiguous, growable UTF-8 string that does not store an allocator instance.
+///
+/// `Send` and `Sync` follow `A`, matching [`UnmanagedVec`] of `u8`.
+///
+/// Reading via [`Deref`] to [`prim@str`] needs no allocator. Growth goes through
+/// [`with_alloc`](Self::with_alloc), which yields a [`StringGuard`]. [`String`]
+/// is the variant that stores the allocator and frees itself on [`Drop`].
+///
+/// # Dropping
+///
+/// Dropping implicitly panics. Release the buffer with [`deallocate`](Self::deallocate).
 #[must_use = "an UnmanagedString must be released via `deallocate`; dropping it panics"]
 pub struct UnmanagedString<A: Allocator> {
     // Invariant: `bytes` always holds valid UTF-8.
@@ -270,7 +386,7 @@ impl<A: Allocator> UnmanagedString<A> {
     ///
     /// # Safety
     ///
-    /// [`Deref`] to [`str`] uses `from_utf8_unchecked`. If `bytes` is not
+    /// [`Deref`] to [`prim@str`] uses `from_utf8_unchecked`. If `bytes` is not
     /// valid UTF-8, later `&str` views violate Rust's UTF-8 invariant.
     /// protobuf `utf8_validation=NONE` decode uses this to copy wire bytes
     /// unchanged.
@@ -288,6 +404,29 @@ impl<A: Allocator> UnmanagedString<A> {
         self.bytes.is_empty()
     }
 
+    /// Returns the byte capacity without reallocating.
+    pub fn capacity(&self) -> usize {
+        self.bytes.capacity()
+    }
+
+    /// Consumes the string and returns the underlying byte buffer.
+    ///
+    /// The caller must still [`deallocate`](UnmanagedVec::deallocate) the buffer.
+    pub fn into_bytes(self) -> UnmanagedVec<u8, A> {
+        self.bytes
+    }
+
+    /// Rebuilds an allocator-carrying [`String`] from this value.
+    ///
+    /// # Safety
+    ///
+    /// `alloc` must own this string's buffer. The bytes must be valid UTF-8,
+    /// which holds unless this value was built with [`Self::from_utf8_unchecked`].
+    pub unsafe fn into_string(self, alloc: A) -> String<A> {
+        let vec = unsafe { self.into_bytes().into_vec(alloc) };
+        String { vec }
+    }
+
     /// Allocates a copy of this string in `alloc`.
     ///
     /// The destination buffer is owned by `alloc`; it need not be the same
@@ -297,6 +436,8 @@ impl<A: Allocator> UnmanagedString<A> {
         <str as ToOwnedIn<A>>::to_owned_in(self, alloc)
     }
 
+    /// Borrows the string together with `alloc`, yielding a [`StringGuard`].
+    ///
     /// # Safety
     ///
     /// `alloc` must own this string's buffer.
@@ -309,6 +450,8 @@ impl<A: Allocator> UnmanagedString<A> {
         }
     }
 
+    /// Frees this string's buffer.
+    ///
     /// # Safety
     ///
     /// `alloc` must own this string's buffer.
@@ -388,7 +531,73 @@ impl<A: Allocator> Borrow<str> for UnmanagedString<A> {
     }
 }
 
+impl<A: Allocator> AsRef<str> for UnmanagedString<A> {
+    #[inline]
+    fn as_ref(&self) -> &str {
+        self
+    }
+}
+
+impl<A: Allocator> AsRef<[u8]> for UnmanagedString<A> {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+impl<A: Allocator> fmt::Display for UnmanagedString<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&**self, f)
+    }
+}
+
+impl<A: Allocator> PartialEq<str> for UnmanagedString<A> {
+    #[inline]
+    fn eq(&self, other: &str) -> bool {
+        &**self == other
+    }
+}
+
+impl<A: Allocator> PartialEq<&str> for UnmanagedString<A> {
+    #[inline]
+    fn eq(&self, other: &&str) -> bool {
+        &**self == *other
+    }
+}
+
+impl<A: Allocator> PartialEq<UnmanagedString<A>> for str {
+    #[inline]
+    fn eq(&self, other: &UnmanagedString<A>) -> bool {
+        self == &**other
+    }
+}
+
+impl<A: Allocator> PartialEq<UnmanagedString<A>> for &str {
+    #[inline]
+    fn eq(&self, other: &UnmanagedString<A>) -> bool {
+        *self == &**other
+    }
+}
+
+impl<A: Allocator> PartialOrd for UnmanagedString<A> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<A: Allocator> Ord for UnmanagedString<A> {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        (**self).cmp(&**other)
+    }
+}
+
 /// Temporary full [`String<A>`] API over an [`UnmanagedString`].
+///
+/// On drop, the guard writes the buffer's pointer, length, and capacity back
+/// into the [`UnmanagedString`]. It does not free the buffer. [`String::clear`]
+/// and [`String::truncate`] shorten that same buffer while the guard is alive.
 pub struct StringGuard<'a, A: Allocator> {
     string: ManuallyDrop<String<A>>,
     origin: &'a mut UnmanagedVec<u8, A>,
@@ -421,6 +630,8 @@ mod tests {
     use super::String;
     use super::UnmanagedString;
     use ::allocator_api2::alloc::Global;
+    use ::allocator_api2::vec::Vec;
+    use ::core::hash::Hasher;
 
     #[test]
     fn owned_string_basics() {
@@ -492,5 +703,83 @@ mod tests {
     fn implicit_drop_panics() {
         let mut s = UnmanagedString::new(Global);
         unsafe { s.with_alloc(Global) }.push('x');
+    }
+
+    #[test]
+    fn send_sync_when_allocator_is() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<String<Global>>();
+        assert_send_sync::<UnmanagedString<Global>>();
+    }
+
+    #[test]
+    fn owned_string_matches_std_traits() {
+        use ::core::fmt::Write;
+        use ::core::hash::Hash;
+
+        let mut s = String::from_str_in("hi", Global);
+        assert!("hi" == s);
+        assert!(s < String::from_str_in("hj", Global));
+        let cloned = s.clone();
+        assert_eq!(cloned, "hi");
+
+        s.extend(['!']);
+        s.extend([&'x']);
+        s.extend(["y"]);
+        write!(s, "{n}", n = 1).unwrap();
+        assert_eq!(s, "hi!xy1");
+
+        let mut hasher_s = HasherStub(0);
+        let mut hasher_lit = HasherStub(0);
+        s.hash(&mut hasher_s);
+        s.as_str().hash(&mut hasher_lit);
+        assert_eq!(hasher_s.finish(), hasher_lit.finish());
+
+        let mut raw = Vec::new_in(Global);
+        raw.extend_from_slice(b"ok");
+        let ok = String::from_utf8(raw).unwrap();
+        assert_eq!(ok, "ok");
+        let mut bad = Vec::new_in(Global);
+        bad.push(0xff);
+        assert!(String::from_utf8(bad).is_err());
+        let mut raw = Vec::new_in(Global);
+        raw.extend_from_slice(b"ok");
+        let unchecked = unsafe { String::from_utf8_unchecked(raw) };
+        assert_eq!(unchecked, "ok");
+    }
+
+    #[test]
+    fn unmanaged_string_cmp_capacity_and_into() {
+        use ::alloc::format;
+
+        let mut s = UnmanagedString::new(Global);
+        unsafe { s.with_alloc(Global) }.reserve(8);
+        unsafe { s.with_alloc(Global) }.push_str("hi");
+        assert!(s.capacity() >= 8);
+        assert!(s == "hi");
+        assert!("hi" == s);
+        assert_eq!(format!("{s}"), "hi");
+        let later = UnmanagedString::from_string(String::from_str_in("hj", Global));
+        assert!(s < later);
+
+        let bytes = s.into_bytes();
+        assert_eq!(&bytes[..], b"hi");
+        unsafe { bytes.deallocate(&Global) };
+
+        let owned = unsafe { later.into_string(Global) };
+        assert_eq!(owned, "hj");
+    }
+
+    struct HasherStub(u64);
+
+    impl Hasher for HasherStub {
+        fn finish(&self) -> u64 {
+            self.0
+        }
+        fn write(&mut self, bytes: &[u8]) {
+            for byte in bytes {
+                self.0 = self.0.wrapping_mul(31).wrapping_add(u64::from(*byte));
+            }
+        }
     }
 }

@@ -12,6 +12,7 @@ use ::allocator_api2::alloc::Allocator;
 ///
 /// [`Copy`] types ignore `alloc` (bitwise copy). Heap-backed types use it.
 pub trait CloneIn<A: Allocator> {
+    /// Allocates the copy in `alloc`.
     fn clone_in(&self, alloc: A) -> Self;
 }
 
@@ -29,7 +30,7 @@ pub trait DefaultIn<A: Allocator> {
     fn default_in(alloc: A) -> Self;
 }
 
-/// Allocator-aware borrowed → owned conversion (like [`ToOwned`], with `alloc`).
+/// Allocator-aware borrowed → owned conversion (like [`alloc::borrow::ToOwned`], with `alloc`).
 ///
 /// Mirrors std's shape:
 /// - blanket [`CloneIn`] → `Owned = Self` (cf. `T: Clone` → `Owned = T`)
@@ -45,7 +46,7 @@ pub trait ToOwnedIn<A: Allocator> {
     fn to_owned_in(&self, alloc: A) -> Self::Owned;
 }
 
-/// Like [`ToOwned`] for `T: Clone`: owned form is `Self`, built via [`CloneIn`].
+/// Like [`alloc::borrow::ToOwned`] for `T: Clone`: owned form is `Self`, built via [`CloneIn`].
 impl<T, A> ToOwnedIn<A> for T
 where
     T: CloneIn<A>,
