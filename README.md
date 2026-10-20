@@ -40,8 +40,6 @@ fn main() {
 }
 ```
 
-A move-only allocator works the same way when you lend `&alloc`, because `&A` implements `Allocator`. That pattern is in `examples/ok_deallocate.rs`. `examples/bad_implicit_drop.rs` panics on purpose by dropping a value without `deallocate`.
-
 ## License
 
 Licensed under the Apache License, Version 2.0.
