@@ -4,7 +4,7 @@
 
 `unmanaged` removes that copy. `UnmanagedBox`, `UnmanagedVec`, and `UnmanagedString` keep the allocator *type*, so allocation and free stay type-checked, but they do not store the allocator *instance*. The parent owns one `A` and passes it in only when a field needs to grow or be freed. What remains in the field is the buffer. A vector or string also stores its length and capacity.
 
-A zero-sized allocator such as `Global` occupies no space either way. The saving appears when `A` carries state, for example an arena.
+A zero-sized allocator such as `Global` occupies no space either way. The saving appears when `A` carries state. A bump allocator is the usual case, and [`bumpalo`](https://crates.io/crates/bumpalo) is the common crate for that.
 
 These types are `no_std` and require `alloc`. The value no longer knows how to free itself, so dropping it panics. Release it with `deallocate`, and pass the same allocator that owns the buffer. Nested unmanaged values are freed by that same call through `DeallocateIn`.
 
@@ -34,6 +34,8 @@ fn main() {
     }
 
     assert_eq!(&values[..], &[1, 2, 3]);
+
+    // drop(values); // panics: nothing here can free the buffer
 
     // SAFETY: same allocator as `new` and `with_alloc`.
     unsafe { values.deallocate(&Global) };
