@@ -6,7 +6,7 @@
 
 A zero-sized allocator such as `Global` occupies no space either way. The saving appears when `A` carries state. A bump allocator is the usual case, and [`bumpalo`](https://crates.io/crates/bumpalo) is the common crate for that.
 
-These types are `no_std` and require `alloc`. The value no longer knows how to free itself, so dropping it panics. Release it with `deallocate`, and pass the same allocator that owns the buffer. Nested unmanaged values are freed by that same call through `DeallocateIn`.
+These types are `no_std`. The value no longer knows how to free itself, so dropping it panics. Release it with `deallocate`, and pass the same allocator that owns the buffer. Nested unmanaged values are freed by that same call through `DeallocateIn`.
 
 ## Install
 
