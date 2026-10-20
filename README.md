@@ -18,7 +18,7 @@ allocator-api2 = { version = "0.2", default-features = false, features = ["alloc
 
 ## Example
 
-`with_alloc` and `deallocate` are `unsafe`: the value does not remember which allocator owns the buffer, so you must pass the same one that created it. The guard gives you a normal `Vec` for the duration of the borrow. Dropping the guard writes the pointer, length, and capacity back. It does not free the buffer.
+`with_alloc` and `deallocate` are `unsafe`: the value does not remember which allocator owns the buffer, so you must pass the same one that created it. The guard is essentially a mutable reference. While it lives, the unmanaged value stays borrowed and you mutate the buffer through the guard, as you would through `&mut Vec<T, A>`. Dropping the guard writes the pointer, length, and capacity back. It does not free the buffer.
 
 ```rust
 use allocator_api2::alloc::Global;
