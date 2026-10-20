@@ -1,18 +1,38 @@
 # unmanaged
 
-`no_std` heap containers that need `alloc` and do not store the allocator inline: `UnmanagedBox`, `UnmanagedVec`, and `UnmanagedString`. A parent owns one allocator and passes it in on allocate and free.
+`Vec<T, A>` and `Box<T, A>` store their allocator in the value. A struct that holds many of them stores a separate copy of `A` in every field. When `A` is larger than a zero-sized type, that repetition is wasted space: one allocator owned by the parent could serve every field.
 
-Implicit `Drop` panics. Call `deallocate` explicitly, or `DeallocateIn` for nested values. Growth goes through `with_alloc`, which borrows the allocator for the duration of the guard.
+`unmanaged` removes that copy. `UnmanagedBox`, `UnmanagedVec`, and `UnmanagedString` keep the allocator *type*, so allocation and free stay type-checked, but they do not store the allocator *instance*. The parent owns one `A` and passes it in only when a field needs to grow or be freed. What remains in the field is the buffer. A vector or string also stores its length and capacity.
 
-`with_alloc` and `deallocate` are `unsafe`. Pass the same allocator that owns the buffer. A move-only allocator can be lent as `&alloc`, because `&A` implements `Allocator` when `A` does.
+A zero-sized allocator such as `Global` occupies no space either way. The saving appears when `A` carries state. A bump allocator is the usual case, and [`bumpalo`](https://crates.io/crates/bumpalo) is the common crate for that.
 
-```toml
-[dependencies]
-unmanaged = "0.1.0"
-allocator-api2 = { version = "0.2", default-features = false, features = ["alloc"] }
+These types are `no_std`. A value no longer knows how to free itself, so dropping it panics. Free it by calling its `deallocate` method — `UnmanagedBox::deallocate`, `UnmanagedVec::deallocate`, or `UnmanagedString::deallocate` — and pass the allocator that owns the buffer. Nested unmanaged values are freed by that same call through `DeallocateIn`.
+
+## Example
+
+`UnmanagedVec::with_alloc` and `UnmanagedVec::deallocate` are `unsafe` methods: the value does not remember which allocator owns the buffer, so you must pass the same one that created it. The guard is essentially a mutable reference. While it lives, the unmanaged value stays borrowed and you mutate the buffer through the guard, as you would through `&mut Vec<T, A>`. Dropping the guard writes the pointer, length, and capacity back. It does not free the buffer.
+
+```rust
+use allocator_api2::alloc::Global;
+use unmanaged::UnmanagedVec;
+
+fn main() {
+    let mut values = UnmanagedVec::<u32, Global>::new(Global);
+
+    {
+        // SAFETY: `Global` owns this buffer.
+        let mut guard = unsafe { values.with_alloc(Global) };
+        guard.extend([1, 2, 3]);
+    }
+
+    assert_eq!(&values[..], &[1, 2, 3]);
+
+    // drop(values); // panics: nothing here can free the buffer
+
+    // SAFETY: same allocator as `new` and `with_alloc`.
+    unsafe { values.deallocate(&Global) };
+}
 ```
-
-See the crate rustdoc and `examples/ok_deallocate.rs`. `examples/bad_implicit_drop.rs` panics on purpose.
 
 ## License
 
