@@ -33,3 +33,13 @@ cargo clippy --all-targets
 
 - Imports: `crate::` / `self::` for this crate; other paths start with `::`.
 - Comments in English.
+
+## Todo
+
+Left for after 0.1.0. None of these block the first publish.
+
+- Owned `IntoIterator` for `UnmanagedVec`. `&` and `&mut` iteration already exist. An owning iterator has to free the buffer, so it needs the allocator that created it.
+- A clear-style API that releases nested unmanaged elements one by one through `DeallocateIn`. Bulk free stays `deallocate`. On a guard, `clear`, `truncate`, and `drain` call element `Drop`, which panics for unmanaged elements.
+- Run Miri on `deallocate`, `deallocate_buffer`, `with_alloc`, and `from_utf8_unchecked`.
+- Declare `rust-version` only after an MSRV is actually checked.
+- Add `CHANGELOG.md` when release notes are worth keeping.
