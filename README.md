@@ -6,7 +6,7 @@
 
 A zero-sized allocator such as `Global` occupies no space either way. The saving appears when `A` carries state. A bump allocator is the usual case, and [`bumpalo`](https://crates.io/crates/bumpalo) is the common crate for that.
 
-These types are `no_std`. The value no longer knows how to free itself, so dropping it panics. Release it with `deallocate`, and pass the same allocator that owns the buffer. Nested unmanaged values are freed by that same call through `DeallocateIn`.
+These types are `no_std`. A value no longer knows how to free itself, so dropping it panics. Free it by calling its `deallocate` method — `UnmanagedBox::deallocate`, `UnmanagedVec::deallocate`, or `UnmanagedString::deallocate` — and pass the allocator that owns the buffer. Nested unmanaged values are freed by that same call through `DeallocateIn`.
 
 ## Install
 
@@ -18,7 +18,7 @@ allocator-api2 = { version = "0.2", default-features = false, features = ["alloc
 
 ## Example
 
-`with_alloc` and `deallocate` are `unsafe`: the value does not remember which allocator owns the buffer, so you must pass the same one that created it. The guard is essentially a mutable reference. While it lives, the unmanaged value stays borrowed and you mutate the buffer through the guard, as you would through `&mut Vec<T, A>`. Dropping the guard writes the pointer, length, and capacity back. It does not free the buffer.
+`UnmanagedVec::with_alloc` and `UnmanagedVec::deallocate` are `unsafe` methods: the value does not remember which allocator owns the buffer, so you must pass the same one that created it. The guard is essentially a mutable reference. While it lives, the unmanaged value stays borrowed and you mutate the buffer through the guard, as you would through `&mut Vec<T, A>`. Dropping the guard writes the pointer, length, and capacity back. It does not free the buffer.
 
 ```rust
 use allocator_api2::alloc::Global;
