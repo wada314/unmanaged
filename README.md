@@ -1,8 +1,10 @@
 # unmanaged
 
-Heap-allocated containers that do not store the allocator inline: `UnmanagedBox`, `UnmanagedVec`, and `UnmanagedString`. A parent owns one allocator and passes it in on allocate and free.
+`no_std` heap containers that need `alloc` and do not store the allocator inline: `UnmanagedBox`, `UnmanagedVec`, and `UnmanagedString`. A parent owns one allocator and passes it in on allocate and free.
 
 Implicit `Drop` panics. Call `deallocate` explicitly, or `DeallocateIn` for nested values. Growth goes through `with_alloc`, which borrows the allocator for the duration of the guard.
+
+`with_alloc` and `deallocate` are `unsafe`. Pass the same allocator that owns the buffer. A move-only allocator can be lent as `&alloc`, because `&A` implements `Allocator` when `A` does.
 
 ```toml
 [dependencies]
