@@ -8,14 +8,6 @@ A zero-sized allocator such as `Global` occupies no space either way. The saving
 
 These types are `no_std`. A value no longer knows how to free itself, so dropping it panics. Free it by calling its `deallocate` method — `UnmanagedBox::deallocate`, `UnmanagedVec::deallocate`, or `UnmanagedString::deallocate` — and pass the allocator that owns the buffer. Nested unmanaged values are freed by that same call through `DeallocateIn`.
 
-## Install
-
-```toml
-[dependencies]
-unmanaged = "0.1.0"
-allocator-api2 = { version = "0.2", default-features = false, features = ["alloc"] }
-```
-
 ## Example
 
 `UnmanagedVec::with_alloc` and `UnmanagedVec::deallocate` are `unsafe` methods: the value does not remember which allocator owns the buffer, so you must pass the same one that created it. The guard is essentially a mutable reference. While it lives, the unmanaged value stays borrowed and you mutate the buffer through the guard, as you would through `&mut Vec<T, A>`. Dropping the guard writes the pointer, length, and capacity back. It does not free the buffer.
