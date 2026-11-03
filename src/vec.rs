@@ -428,7 +428,7 @@ pub struct VecGuard<'a, T, A: Allocator> {
     origin: &'a mut UnmanagedVec<T, A>,
 }
 
-impl<'a, T, A: Allocator> Deref for VecGuard<'a, T, A> {
+impl<T, A: Allocator> Deref for VecGuard<'_, T, A> {
     type Target = Vec<T, A>;
 
     fn deref(&self) -> &Vec<T, A> {
@@ -436,13 +436,13 @@ impl<'a, T, A: Allocator> Deref for VecGuard<'a, T, A> {
     }
 }
 
-impl<'a, T, A: Allocator> DerefMut for VecGuard<'a, T, A> {
+impl<T, A: Allocator> DerefMut for VecGuard<'_, T, A> {
     fn deref_mut(&mut self) -> &mut Vec<T, A> {
         &mut self.vec
     }
 }
 
-impl<'a, T, A: Allocator> Drop for VecGuard<'a, T, A> {
+impl<T, A: Allocator> Drop for VecGuard<'_, T, A> {
     fn drop(&mut self) {
         let vec = unsafe { ManuallyDrop::take(&mut self.vec) };
         let (ptr, len, cap, _alloc) = vec.into_raw_parts_with_alloc();
