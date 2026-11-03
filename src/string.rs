@@ -603,7 +603,7 @@ pub struct StringGuard<'a, A: Allocator> {
     origin: &'a mut UnmanagedVec<u8, A>,
 }
 
-impl<'a, A: Allocator> Deref for StringGuard<'a, A> {
+impl<A: Allocator> Deref for StringGuard<'_, A> {
     type Target = String<A>;
 
     fn deref(&self) -> &String<A> {
@@ -611,13 +611,13 @@ impl<'a, A: Allocator> Deref for StringGuard<'a, A> {
     }
 }
 
-impl<'a, A: Allocator> DerefMut for StringGuard<'a, A> {
+impl<A: Allocator> DerefMut for StringGuard<'_, A> {
     fn deref_mut(&mut self) -> &mut String<A> {
         &mut self.string
     }
 }
 
-impl<'a, A: Allocator> Drop for StringGuard<'a, A> {
+impl<A: Allocator> Drop for StringGuard<'_, A> {
     fn drop(&mut self) {
         let string = unsafe { ManuallyDrop::take(&mut self.string) };
         let (ptr, len, cap, _alloc) = string.into_raw_parts_with_alloc();

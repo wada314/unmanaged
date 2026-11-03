@@ -16,9 +16,10 @@ cargo check --target x86_64-unknown-none --lib
 cargo run --example ok_deallocate
 cargo fmt
 cargo clippy --all-targets
+RUSTDOCFLAGS='-D warnings' cargo doc --no-deps
 ```
 
-`cargo test` runs on the host. The library is `no_std`, so CI also checks it for `x86_64-unknown-none`, where `std` is absent and `alloc` is available. That target cannot run the test harness.
+`cargo test` runs on the host (and runs rustdoc examples / doctests). The library is `no_std`, so CI also checks it for `x86_64-unknown-none`, where `std` is absent and `alloc` is available. That target cannot run the test harness. CI: `.github/workflows/rust.yml`.
 
 `examples/bad_implicit_drop.rs` is expected to panic if run; it documents the forbidden path.
 
