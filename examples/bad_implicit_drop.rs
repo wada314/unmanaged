@@ -25,6 +25,8 @@ impl CountingAllocator {
     }
 }
 
+// SAFETY: every allocation is obtained from `Global` and freed with the same
+// layout through `Global`; this type only wraps that allocator.
 unsafe impl Allocator for CountingAllocator {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         self.allocations.set(self.allocations.get() + 1);

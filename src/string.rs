@@ -172,6 +172,8 @@ impl<A: Allocator> String<A> {
     /// The parts must originate from a `Vec<u8, A>` whose bytes are valid UTF-8,
     /// and `alloc` must own the buffer.
     pub unsafe fn from_raw_parts_in(ptr: *mut u8, len: usize, cap: usize, alloc: A) -> Self {
+        // SAFETY: caller guarantees the parts describe a `Vec<u8, A>` buffer
+        // owned by `alloc`, and that the bytes are valid UTF-8.
         let vec = unsafe { Vec::from_raw_parts_in(ptr, len, cap, alloc) };
         Self { vec }
     }
@@ -423,6 +425,8 @@ impl<A: Allocator> UnmanagedString<A> {
     /// `alloc` must own this string's buffer. The bytes must be valid UTF-8,
     /// which holds unless this value was built with [`Self::from_utf8_unchecked`].
     pub unsafe fn into_string(self, alloc: A) -> String<A> {
+        // SAFETY: caller guarantees `alloc` owns this buffer; UTF-8 holds unless
+        // this value was built with `from_utf8_unchecked`.
         let vec = unsafe { self.into_bytes().into_vec(alloc) };
         String { vec }
     }
@@ -443,6 +447,8 @@ impl<A: Allocator> UnmanagedString<A> {
     /// `alloc` must own this string's buffer.
     pub unsafe fn with_alloc(&mut self, alloc: A) -> StringGuard<'_, A> {
         let (ptr, len, cap) = self.bytes.as_raw_parts();
+        // SAFETY: caller guarantees `alloc` owns this buffer; parts describe
+        // that allocation and the UTF-8 invariant of `UnmanagedString`.
         let string = unsafe { String::from_raw_parts_in(ptr, len, cap, alloc) };
         StringGuard {
             string: ManuallyDrop::new(string),
@@ -457,6 +463,7 @@ impl<A: Allocator> UnmanagedString<A> {
     /// `alloc` must own this string's buffer.
     pub unsafe fn deallocate(self, alloc: &A) {
         // `u8: DeallocateIn` — byte buffer only; no nested unmanaged elements.
+        // SAFETY: same `alloc` ownership obligation as this method.
         unsafe { self.bytes.deallocate(alloc) }
     }
 }
@@ -619,8 +626,12 @@ impl<A: Allocator> DerefMut for StringGuard<'_, A> {
 
 impl<A: Allocator> Drop for StringGuard<'_, A> {
     fn drop(&mut self) {
+        // SAFETY: `string` is initialized for the lifetime of the guard and is
+        // taken exactly once here so `String`'s `Drop` does not free the buffer.
         let string = unsafe { ManuallyDrop::take(&mut self.string) };
         let (ptr, len, cap, _alloc) = string.into_raw_parts_with_alloc();
+        // SAFETY: parts came from the `String` rebuilt over `origin`'s buffer;
+        // writing them back restores a valid unmanaged representation.
         unsafe { self.origin.set_raw_parts(ptr, len, cap) };
     }
 }
@@ -650,6 +661,7 @@ mod tests {
     fn build_and_read() {
         let mut s = UnmanagedString::new(Global);
         {
+            // SAFETY: `Global` owns this buffer.
             let mut g = unsafe { s.with_alloc(Global) };
             g.push('h');
             g.push_str("ello, ");
@@ -662,20 +674,24 @@ mod tests {
         }
         assert_eq!(&*s, "hello");
         assert_eq!(s.len(), 5);
+        // SAFETY: `Global` owns this buffer.
         unsafe { s.deallocate(&Global) };
     }
 
     #[test]
     fn multibyte_pop() {
         let mut s = UnmanagedString::new(Global);
+        // SAFETY: `Global` owns this buffer.
         unsafe { s.with_alloc(Global) }.push_str("aé中");
         {
+            // SAFETY: `Global` owns this buffer.
             let mut g = unsafe { s.with_alloc(Global) };
             assert_eq!(g.pop(), Some('中'));
             assert_eq!(g.pop(), Some('é'));
             assert_eq!(g.pop(), Some('a'));
             assert_eq!(g.pop(), None);
         }
+        // SAFETY: `Global` owns this buffer.
         unsafe { s.deallocate(&Global) };
     }
 
@@ -684,17 +700,21 @@ mod tests {
         let owned = String::from_str_in("roundtrip", Global);
         let s = UnmanagedString::from_string(owned);
         assert_eq!(&*s, "roundtrip");
+        // SAFETY: `Global` owns this buffer.
         unsafe { s.deallocate(&Global) };
     }
 
     #[test]
     fn clone_in_copies_contents() {
         let mut s = UnmanagedString::new(Global);
+        // SAFETY: `Global` owns this buffer.
         unsafe { s.with_alloc(Global) }.push_str("clone me");
         let c = s.clone_in(Global);
         assert_eq!(&*c, "clone me");
         assert_eq!(&*s, "clone me");
+        // SAFETY: `Global` owns the clone.
         unsafe { c.deallocate(&Global) };
+        // SAFETY: `Global` owns the original.
         unsafe { s.deallocate(&Global) };
     }
 
@@ -702,6 +722,7 @@ mod tests {
     #[should_panic(expected = "must be released via `deallocate`")]
     fn implicit_drop_panics() {
         let mut s = UnmanagedString::new(Global);
+        // SAFETY: `Global` owns this buffer for the short-lived guard.
         unsafe { s.with_alloc(Global) }.push('x');
     }
 
@@ -744,6 +765,8 @@ mod tests {
         assert!(String::from_utf8(bad).is_err());
         let mut raw = Vec::new_in(Global);
         raw.extend_from_slice(b"ok");
+        assert!(::core::str::from_utf8(raw.as_slice()).is_ok());
+        // SAFETY: `raw` holds valid UTF-8 (`b"ok"`), checked above.
         let unchecked = unsafe { String::from_utf8_unchecked(raw) };
         assert_eq!(unchecked, "ok");
     }
@@ -751,9 +774,12 @@ mod tests {
     #[test]
     fn unmanaged_string_cmp_capacity_and_into() {
         use ::alloc::format;
+        use ::core::convert::AsRef;
 
         let mut s = UnmanagedString::new(Global);
+        // SAFETY: `Global` owns this buffer.
         unsafe { s.with_alloc(Global) }.reserve(8);
+        // SAFETY: `Global` owns this buffer.
         unsafe { s.with_alloc(Global) }.push_str("hi");
         assert!(s.capacity() >= 8);
         assert!(s == "hi");
@@ -764,8 +790,11 @@ mod tests {
 
         let bytes = s.into_bytes();
         assert_eq!(&bytes[..], b"hi");
+        // SAFETY: `Global` owns this buffer.
         unsafe { bytes.deallocate(&Global) };
 
+        assert!(::core::str::from_utf8(AsRef::<[u8]>::as_ref(&later)).is_ok());
+        // SAFETY: `Global` owns `later` and its bytes are valid UTF-8 (checked).
         let owned = unsafe { later.into_string(Global) };
         assert_eq!(owned, "hj");
     }

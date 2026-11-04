@@ -41,6 +41,8 @@ impl CountingAllocator {
     }
 }
 
+// SAFETY: every allocation is obtained from `Global` and freed with the same
+// layout through `Global`; this type only wraps that allocator.
 unsafe impl Allocator for CountingAllocator {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         self.allocations.set(self.allocations.get() + 1);
@@ -99,8 +101,9 @@ fn growth_and_nested_deallocate_free_every_buffer() {
     let boxed = UnmanagedBox::new_in(inner, &alloc);
     let cloned = boxed.clone_in(&alloc);
     assert_eq!(&*cloned, "");
-    // SAFETY: both boxes were allocated by `&alloc`.
+    // SAFETY: `cloned` was allocated by `&alloc`.
     unsafe { cloned.deallocate(&&alloc) };
+    // SAFETY: `boxed` was allocated by `&alloc`.
     unsafe { boxed.deallocate(&&alloc) };
     alloc.assert_balanced();
 }
@@ -119,8 +122,9 @@ fn deallocate_buffer_after_elements_are_removed() {
     };
     assert_eq!(&*popped, "gone");
     assert_eq!(v.len(), 0);
-    // SAFETY: `popped` and `v` were both allocated by `&alloc`. `v` is empty.
+    // SAFETY: `popped` was allocated by `&alloc`.
     unsafe { popped.deallocate(&&alloc) };
+    // SAFETY: `&alloc` owns `v`, and `pop` left it empty.
     unsafe { v.deallocate_buffer(&&alloc) };
     alloc.assert_balanced();
 }
@@ -141,6 +145,7 @@ fn utf8_failure_returns_the_buffer_and_unchecked_keeps_bytes() {
     // SAFETY: `&alloc` owns this buffer.
     unsafe { raw.with_alloc(&alloc) }.extend_from_slice(&[0xff]);
     // Do not view this as `&str`: the bytes are not UTF-8.
+    assert!(::core::str::from_utf8(&raw).is_err());
     // SAFETY: caller opts out of the UTF-8 check; we only read the bytes back.
     let unchecked = unsafe { UnmanagedString::from_utf8_unchecked(raw) };
     let back = unchecked.into_bytes();
@@ -166,7 +171,8 @@ fn popped_unmanaged_value_still_panics_on_drop() {
     };
     // The vector buffer is empty and must be released before `popped` drops,
     // or the second panicking `Drop` aborts the process.
-    // SAFETY: `&alloc` owns `v`, and `pop` left it empty.
+    assert_eq!(v.len(), 0);
+    // SAFETY: `&alloc` owns `v`, and `pop` left it empty (checked above).
     unsafe { v.deallocate_buffer(&&alloc) };
     let _ = popped;
 }
