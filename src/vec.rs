@@ -82,6 +82,8 @@ impl<T, A: Allocator> UnmanagedVec<T, A> {
         let len = self.len;
         let cap = self.cap;
         mem::forget(self);
+        // SAFETY: caller guarantees `alloc` owns this buffer; `ptr`/`len`/`cap`
+        // describe that allocation. `forget` prevents the panicking `Drop`.
         unsafe { Vec::from_raw_parts_in(ptr, len, cap, alloc) }
     }
 
@@ -122,6 +124,8 @@ impl<T, A: Allocator> UnmanagedVec<T, A> {
     ///
     /// `alloc` must be interchangeable with the allocator that owns this buffer.
     pub unsafe fn with_alloc(&mut self, alloc: A) -> VecGuard<'_, T, A> {
+        // SAFETY: caller guarantees `alloc` is interchangeable with the owner
+        // of this buffer; parts came from that allocation (or `Vec::new_in`).
         let vec = unsafe { Vec::from_raw_parts_in(self.ptr.as_ptr(), self.len, self.cap, alloc) };
         VecGuard {
             vec: ManuallyDrop::new(vec),
@@ -155,6 +159,8 @@ impl<T, A: Allocator> UnmanagedVec<T, A> {
         // Length 0 so `Vec` does not drop elements again. `alloc` is `&A`, so
         // this is `Vec<T, &A>`, not `Vec<T, A>` — a different allocator type
         // than the one used to grow the buffer.
+        // SAFETY: elements were released above; caller guarantees `alloc` owns
+        // the empty buffer of capacity `cap`.
         let _ = unsafe { Vec::from_raw_parts_in(ptr, 0, cap, alloc) };
     }
 
@@ -173,6 +179,7 @@ impl<T, A: Allocator> UnmanagedVec<T, A> {
         let cap = self.cap;
         mem::forget(self);
         // `alloc` is `&A`, so this is `Vec<T, &A>`, not `Vec<T, A>`.
+        // SAFETY: caller guarantees `len == 0` and `alloc` owns this buffer.
         let _ = unsafe { Vec::from_raw_parts_in(ptr, 0, cap, alloc) };
     }
 }
@@ -394,7 +401,7 @@ impl<'a, T, A: Allocator> IntoIterator for &'a mut UnmanagedVec<T, A> {
     }
 }
 
-// Safety: the vector uniquely owns `len` initialized elements and a buffer
+// SAFETY: the vector uniquely owns `len` initialized elements and a buffer
 // allocated by `A`. The allocator instance is not stored; `A: Send` matches
 // `Vec<T, A>`.
 unsafe impl<T, A> Send for UnmanagedVec<T, A>
@@ -404,7 +411,7 @@ where
 {
 }
 
-// Safety: sharing the buffer is sound when `T` and `A` are `Sync`, matching
+// SAFETY: sharing the buffer is sound when `T` and `A` are `Sync`, matching
 // `Vec<T, A>`.
 unsafe impl<T, A> Sync for UnmanagedVec<T, A>
 where
@@ -444,8 +451,12 @@ impl<T, A: Allocator> DerefMut for VecGuard<'_, T, A> {
 
 impl<T, A: Allocator> Drop for VecGuard<'_, T, A> {
     fn drop(&mut self) {
+        // SAFETY: `vec` is initialized for the lifetime of the guard and is
+        // taken exactly once here so `Vec`'s `Drop` does not free the buffer.
         let vec = unsafe { ManuallyDrop::take(&mut self.vec) };
         let (ptr, len, cap, _alloc) = vec.into_raw_parts_with_alloc();
+        // SAFETY: parts came from the `Vec` that was rebuilt over `origin`'s
+        // buffer; writing them back restores a valid unmanaged representation.
         unsafe { self.origin.set_raw_parts(ptr, len, cap) };
     }
 }
@@ -460,6 +471,7 @@ mod tests {
     fn grow_via_guard_then_deallocate() {
         let mut v = UnmanagedVec::<u32, Global>::new(Global);
         {
+            // SAFETY: `Global` owns this buffer.
             let mut g = unsafe { v.with_alloc(Global) };
             g.push(1);
             g.push(2);
@@ -470,12 +482,14 @@ mod tests {
         assert_eq!(v.len(), 4);
         assert_eq!(&v[..], &[1, 2, 3, 4]);
         assert_eq!(v.iter().sum::<u32>(), 10);
+        // SAFETY: `Global` owns this buffer.
         unsafe { v.deallocate(&Global) };
     }
 
     #[test]
     fn empty_vec_deallocates() {
         let v = UnmanagedVec::<u32, Global>::new(Global);
+        // SAFETY: `Global` owns this buffer (`new` did not allocate).
         unsafe { v.deallocate(&Global) };
     }
 
@@ -485,6 +499,7 @@ mod tests {
         vec.extend([10, 20, 30]);
         let v = UnmanagedVec::from_vec(vec);
         assert_eq!(&v[..], &[10, 20, 30]);
+        // SAFETY: `Global` owns this buffer.
         unsafe { v.deallocate(&Global) };
     }
 
@@ -495,14 +510,18 @@ mod tests {
         let mut a = UnmanagedVec::<u8, Global>::new(Global);
         let mut b = UnmanagedVec::<u8, Global>::new(Global);
         {
+            // SAFETY: `Global` owns `a`.
             let mut ga = unsafe { a.with_alloc(Global) };
             ga.extend_from_slice(b"hi");
+            // SAFETY: `Global` owns `b`.
             let mut gb = unsafe { b.with_alloc(Global) };
             gb.extend_from_slice(b"hi");
         }
         assert_eq!(a, b);
         assert_eq!(format!("{:?}", a), "[104, 105]");
+        // SAFETY: `Global` owns `a`.
         unsafe { a.deallocate(&Global) };
+        // SAFETY: `Global` owns `b`.
         unsafe { b.deallocate(&Global) };
     }
 
@@ -510,13 +529,16 @@ mod tests {
     fn clone_in_copies_elements() {
         let mut v = UnmanagedVec::<u32, Global>::new(Global);
         {
+            // SAFETY: `Global` owns this buffer.
             let mut g = unsafe { v.with_alloc(Global) };
             g.extend([1, 2, 3]);
         }
         let c = v.clone_in(Global);
         assert_eq!(&c[..], &[1, 2, 3]);
         assert_eq!(&v[..], &[1, 2, 3]);
+        // SAFETY: `Global` owns the clone.
         unsafe { c.deallocate(&Global) };
+        // SAFETY: `Global` owns the original.
         unsafe { v.deallocate(&Global) };
     }
 
@@ -524,6 +546,7 @@ mod tests {
     fn slice_to_owned_in_copies_elements() {
         let owned: UnmanagedVec<u32, Global> = [1u32, 2, 3].as_slice().to_owned_in(Global);
         assert_eq!(&owned[..], &[1, 2, 3]);
+        // SAFETY: `Global` owns this buffer.
         unsafe { owned.deallocate(&Global) };
     }
 
@@ -534,6 +557,7 @@ mod tests {
 
         let mut v = UnmanagedVec::<UnmanagedString<Global>, Global>::new(Global);
         {
+            // SAFETY: `Global` owns this vector and will own each pushed string.
             let mut g = unsafe { v.with_alloc(Global) };
             g.push(UnmanagedString::from_string(AString::from_str_in(
                 "a", Global,
@@ -545,7 +569,9 @@ mod tests {
         let c = v.clone_in(Global);
         assert_eq!(&*c[0], "a");
         assert_eq!(&*c[1], "b");
+        // SAFETY: `Global` owns the clone and its nested strings.
         unsafe { c.deallocate(&Global) };
+        // SAFETY: `Global` owns the original and its nested strings.
         unsafe { v.deallocate(&Global) };
     }
 
@@ -553,6 +579,7 @@ mod tests {
     #[should_panic(expected = "must be released via `deallocate`")]
     fn implicit_drop_panics() {
         let mut v = UnmanagedVec::<u32, Global>::new(Global);
+        // SAFETY: `Global` owns this buffer for the short-lived guard.
         unsafe { v.with_alloc(Global) }.push(1);
     }
 
@@ -567,7 +594,9 @@ mod tests {
         let mut a = UnmanagedVec::<u32, Global>::new(Global);
         let mut b = UnmanagedVec::<u32, Global>::new(Global);
         {
+            // SAFETY: `Global` owns `a`.
             unsafe { a.with_alloc(Global) }.extend([1, 2]);
+            // SAFETY: `Global` owns `b`.
             unsafe { b.with_alloc(Global) }.extend([1, 3]);
         }
         assert!(a < b);
@@ -585,8 +614,10 @@ mod tests {
         }
         assert_eq!(sum, 3);
         assert_eq!(&a[..], &[2, 3]);
+        // SAFETY: `Global` owns `a`.
         let owned = unsafe { a.into_vec(Global) };
         assert_eq!(owned.as_slice(), &[2, 3]);
+        // SAFETY: `Global` owns `b`.
         unsafe { b.deallocate(&Global) };
     }
 }

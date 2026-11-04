@@ -71,6 +71,8 @@ impl<T, A: Allocator> UnmanagedBox<T, A> {
     pub unsafe fn into_box(self, alloc: A) -> Box<T, A> {
         let ptr = self.ptr.as_ptr();
         mem::forget(self);
+        // SAFETY: caller guarantees `alloc` owns this allocation; `ptr` came from
+        // `Box`/`new_in` and is non-null. `forget` prevents the panicking `Drop`.
         unsafe { Box::from_raw_in(ptr, alloc) }
     }
 
@@ -87,6 +89,8 @@ impl<T, A: Allocator> UnmanagedBox<T, A> {
         mem::forget(self);
         // `alloc` is `&A`, so this is `Box<T, &A>`, not `Box<T, A>` — a
         // different allocator type than the one used to allocate the slot.
+        // SAFETY: caller guarantees `alloc` owns the slot; `ptr` is the live
+        // allocation. `forget` prevents the panicking `Drop`.
         let b = unsafe { Box::<T, &A>::from_raw_in(ptr, alloc) };
         let value = Box::into_inner(b);
         // SAFETY: same `alloc` obligation as this method.
@@ -102,6 +106,7 @@ impl<T, A: Allocator> UnmanagedBox<T, A> {
     ///
     /// `alloc` must own this box's allocation.
     pub unsafe fn into_inner(self, alloc: A) -> T {
+        // SAFETY: same `alloc` ownership obligation as this method.
         let b = unsafe { self.into_box(alloc) };
         Box::into_inner(b)
     }
@@ -145,17 +150,19 @@ impl<T, A: Allocator> Deref for UnmanagedBox<T, A> {
     type Target = T;
 
     fn deref(&self) -> &T {
+        // SAFETY: `ptr` uniquely owns a live `T` for the lifetime of `self`.
         unsafe { self.ptr.as_ref() }
     }
 }
 
 impl<T, A: Allocator> DerefMut for UnmanagedBox<T, A> {
     fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: `ptr` uniquely owns a live `T` and we hold `&mut self`.
         unsafe { self.ptr.as_mut() }
     }
 }
 
-// Safety: the box uniquely owns `T` and the allocation belongs to `A`.
+// SAFETY: the box uniquely owns `T` and the allocation belongs to `A`.
 // The allocator instance is not stored; `A: Send` matches `Box<T, A>`.
 unsafe impl<T, A> Send for UnmanagedBox<T, A>
 where
@@ -164,7 +171,7 @@ where
 {
 }
 
-// Safety: sharing the allocation is sound when `T` and `A` are `Sync`,
+// SAFETY: sharing the allocation is sound when `T` and `A` are `Sync`,
 // matching `Box<T, A>`.
 unsafe impl<T, A> Sync for UnmanagedBox<T, A>
 where
@@ -264,6 +271,7 @@ mod tests {
         assert_eq!(*b, 41);
         *b += 1;
         assert_eq!(*b, 42);
+        // SAFETY: `Global` owns this box.
         unsafe { b.deallocate(&Global) };
     }
 
@@ -271,6 +279,7 @@ mod tests {
     fn into_inner_returns_value() {
         // `alloc::string::String` needs no `CloneIn`/`DeallocateIn` for into_inner.
         let b = UnmanagedBox::new_in(String::from("owned"), Global);
+        // SAFETY: `Global` owns this box.
         let s = unsafe { b.into_inner(Global) };
         assert_eq!(s, "owned");
     }
@@ -278,6 +287,7 @@ mod tests {
     #[test]
     fn deallocate_copy_inner() {
         let b = UnmanagedBox::new_in(7u32, Global);
+        // SAFETY: `Global` owns this box.
         unsafe { b.deallocate(&Global) };
     }
 
@@ -287,7 +297,9 @@ mod tests {
         let c = b.clone_in(Global);
         assert_eq!(*c, 42);
         assert_eq!(*b, 42);
+        // SAFETY: `Global` owns the clone.
         unsafe { c.deallocate(&Global) };
+        // SAFETY: `Global` owns the original.
         unsafe { b.deallocate(&Global) };
     }
 
@@ -296,6 +308,7 @@ mod tests {
         use crate::UnmanagedString;
         let inner = UnmanagedString::from_string(crate::String::from_str_in("inner", Global));
         let b = UnmanagedBox::new_in(inner, Global);
+        // SAFETY: `Global` owns the box and the nested string buffer.
         unsafe { b.deallocate(&Global) };
     }
 
@@ -332,8 +345,10 @@ mod tests {
         7u32.hash(&mut hc);
         assert_eq!(hb.finish(), hc.finish());
 
+        // SAFETY: `Global` owns `b`.
         let boxed = unsafe { b.into_box(Global) };
         assert_eq!(*boxed, 7);
+        // SAFETY: `Global` owns `c`.
         unsafe { c.deallocate(&Global) };
     }
 

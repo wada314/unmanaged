@@ -41,6 +41,8 @@ impl CountingAllocator {
     }
 }
 
+// SAFETY: every allocation is obtained from `Global` and freed with the same
+// layout through `Global`; this type only wraps that allocator.
 unsafe impl Allocator for CountingAllocator {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         self.allocations.set(self.allocations.get() + 1);
@@ -99,8 +101,9 @@ fn growth_and_nested_deallocate_free_every_buffer() {
     let boxed = UnmanagedBox::new_in(inner, &alloc);
     let cloned = boxed.clone_in(&alloc);
     assert_eq!(&*cloned, "");
-    // SAFETY: both boxes were allocated by `&alloc`.
+    // SAFETY: `cloned` was allocated by `&alloc`.
     unsafe { cloned.deallocate(&&alloc) };
+    // SAFETY: `boxed` was allocated by `&alloc`.
     unsafe { boxed.deallocate(&&alloc) };
     alloc.assert_balanced();
 }
@@ -119,8 +122,9 @@ fn deallocate_buffer_after_elements_are_removed() {
     };
     assert_eq!(&*popped, "gone");
     assert_eq!(v.len(), 0);
-    // SAFETY: `popped` and `v` were both allocated by `&alloc`. `v` is empty.
+    // SAFETY: `popped` was allocated by `&alloc`.
     unsafe { popped.deallocate(&&alloc) };
+    // SAFETY: `&alloc` owns `v`, and `pop` left it empty.
     unsafe { v.deallocate_buffer(&&alloc) };
     alloc.assert_balanced();
 }
