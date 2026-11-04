@@ -10,3 +10,7 @@ readme = "README.md"
 
 [dependencies]
 allocator-api2 = { version = "0.2", default-features = false, features = ["alloc"] }
+
+# Explicitly do not inherit a parent workspace's [workspace.lints]
+# (e.g. when vendored as a puroro submodule).
+[lints]
