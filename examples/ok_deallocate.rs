@@ -12,17 +12,19 @@ use ::core::cell::Cell;
 use ::core::ptr::NonNull;
 use ::unmanaged::UnmanagedVec;
 
-/// A minimal allocator that forwards to `Global` while counting allocations.
-/// It is deliberately neither `Copy` nor `Clone`, proving that `UnmanagedVec`
-/// works with move-only allocators borrowed by reference.
+/// A minimal allocator that forwards to `Global` while counting allocate /
+/// deallocate calls. It is deliberately neither `Copy` nor `Clone`, proving
+/// that `UnmanagedVec` works with move-only allocators borrowed by reference.
 struct CountingAllocator {
     allocations: Cell<usize>,
+    deallocations: Cell<usize>,
 }
 
 impl CountingAllocator {
     fn new() -> Self {
         Self {
             allocations: Cell::new(0),
+            deallocations: Cell::new(0),
         }
     }
 }
@@ -36,6 +38,7 @@ unsafe impl Allocator for CountingAllocator {
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        self.deallocations.set(self.deallocations.get() + 1);
         // SAFETY: `ptr` was handed out by `Global` via this allocator.
         unsafe { Global.deallocate(ptr, layout) }
     }
@@ -59,10 +62,19 @@ fn main() {
 
     assert_eq!(v.len(), 8);
     assert_eq!(&v[..], &[0, 1, 2, 3, 4, 5, 6, 7]);
+    // Growth may free intermediate buffers on reallocation; one live buffer
+    // remains until the explicit `deallocate` below.
+    assert!(alloc.allocations.get() > alloc.deallocations.get());
 
     // Release through the same borrowed allocator.
     // SAFETY: same allocator instance used for all growth above.
     unsafe { v.deallocate(&&alloc) };
+
+    assert_eq!(
+        alloc.allocations.get(),
+        alloc.deallocations.get(),
+        "every allocation must be paired with a deallocate"
+    );
 
     println!(
         "ok: grew via guard and deallocated; allocator ran {} allocation(s)",

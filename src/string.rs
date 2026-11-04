@@ -765,7 +765,8 @@ mod tests {
         assert!(String::from_utf8(bad).is_err());
         let mut raw = Vec::new_in(Global);
         raw.extend_from_slice(b"ok");
-        // SAFETY: `raw` holds valid UTF-8 (`b"ok"`).
+        assert!(::core::str::from_utf8(raw.as_slice()).is_ok());
+        // SAFETY: `raw` holds valid UTF-8 (`b"ok"`), checked above.
         let unchecked = unsafe { String::from_utf8_unchecked(raw) };
         assert_eq!(unchecked, "ok");
     }
@@ -773,6 +774,7 @@ mod tests {
     #[test]
     fn unmanaged_string_cmp_capacity_and_into() {
         use ::alloc::format;
+        use ::core::convert::AsRef;
 
         let mut s = UnmanagedString::new(Global);
         // SAFETY: `Global` owns this buffer.
@@ -791,7 +793,8 @@ mod tests {
         // SAFETY: `Global` owns this buffer.
         unsafe { bytes.deallocate(&Global) };
 
-        // SAFETY: `Global` owns `later` and its bytes are valid UTF-8.
+        assert!(::core::str::from_utf8(AsRef::<[u8]>::as_ref(&later)).is_ok());
+        // SAFETY: `Global` owns `later` and its bytes are valid UTF-8 (checked).
         let owned = unsafe { later.into_string(Global) };
         assert_eq!(owned, "hj");
     }

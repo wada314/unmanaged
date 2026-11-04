@@ -145,6 +145,7 @@ fn utf8_failure_returns_the_buffer_and_unchecked_keeps_bytes() {
     // SAFETY: `&alloc` owns this buffer.
     unsafe { raw.with_alloc(&alloc) }.extend_from_slice(&[0xff]);
     // Do not view this as `&str`: the bytes are not UTF-8.
+    assert!(::core::str::from_utf8(&raw).is_err());
     // SAFETY: caller opts out of the UTF-8 check; we only read the bytes back.
     let unchecked = unsafe { UnmanagedString::from_utf8_unchecked(raw) };
     let back = unchecked.into_bytes();
@@ -170,7 +171,8 @@ fn popped_unmanaged_value_still_panics_on_drop() {
     };
     // The vector buffer is empty and must be released before `popped` drops,
     // or the second panicking `Drop` aborts the process.
-    // SAFETY: `&alloc` owns `v`, and `pop` left it empty.
+    assert_eq!(v.len(), 0);
+    // SAFETY: `&alloc` owns `v`, and `pop` left it empty (checked above).
     unsafe { v.deallocate_buffer(&&alloc) };
     let _ = popped;
 }
