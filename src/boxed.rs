@@ -313,6 +313,8 @@ mod tests {
     }
 
     #[test]
+    // The panic fires inside `Drop`, before any free. Miri reports that as a leak.
+    #[cfg_attr(miri, ignore = "implicit Drop panics before the buffer is freed")]
     #[should_panic(expected = "must be released")]
     fn implicit_drop_panics() {
         let _b = UnmanagedBox::new_in(7u32, Global);
