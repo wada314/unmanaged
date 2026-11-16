@@ -12,6 +12,7 @@ Because the allocator is not in the value, **implicit `Drop` panics**. Callers m
 
 ```sh
 cargo test
+cargo +nightly miri test
 cargo check --target x86_64-unknown-none --lib
 cargo run --example ok_deallocate
 cargo fmt
@@ -19,7 +20,7 @@ cargo clippy --all-targets
 RUSTDOCFLAGS='-D warnings' cargo doc --no-deps
 ```
 
-`cargo test` runs on the host (and runs rustdoc examples / doctests). The library is `no_std`, so CI also checks it for `x86_64-unknown-none`, where `std` is absent and `alloc` is available. That target cannot run the test harness. CI: `.github/workflows/rust.yml`.
+`cargo test` runs on the host (and runs rustdoc examples / doctests). `cargo +nightly miri test` is the same host suite under Miri, including `deallocate()`, `deallocate_buffer()`, `with_alloc()`, and both `from_utf8_unchecked()` entry points. Leak checking stays on. The implicit-`Drop` panic tests are `#[cfg_attr(miri, ignore)]` because that panic happens before the buffer is freed. The library is `no_std`, so CI also checks it for `x86_64-unknown-none`, where `std` is absent and `alloc` is available. That target cannot run the test harness. CI: `.github/workflows/rust.yml` (host tests, the Miri job, and the `no_std` check).
 
 `examples/bad_implicit_drop.rs` is expected to panic if run; it documents the forbidden path.
 
@@ -41,6 +42,5 @@ Left for after 0.1.0. None of these block the first publish.
 
 - Owned `IntoIterator` for `UnmanagedVec`. `&` and `&mut` iteration already exist. An owning iterator has to free the buffer, so it needs the allocator that created it.
 - A clear-style API that releases nested unmanaged elements one by one through `DeallocateIn`. Bulk free stays `deallocate`. On a guard, `clear`, `truncate`, and `drain` call element `Drop`, which panics for unmanaged elements.
-- Run Miri on `deallocate`, `deallocate_buffer`, `with_alloc`, and `from_utf8_unchecked`.
 - Declare `rust-version` only after an MSRV is actually checked.
 - Add `CHANGELOG.md` when release notes are worth keeping.

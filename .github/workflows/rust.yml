@@ -29,3 +29,13 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --locked --no-deps
+
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - name: Miri on deallocate, deallocate_buffer, with_alloc, and from_utf8_unchecked
+        run: cargo miri test --locked

@@ -157,6 +157,72 @@ fn utf8_failure_returns_the_buffer_and_unchecked_keeps_bytes() {
 }
 
 #[test]
+fn deallocate_frees_a_reserved_empty_buffer() {
+    let alloc = CountingAllocator::new();
+    let mut v = UnmanagedVec::<u32, _>::new(&alloc);
+    // SAFETY: `&alloc` owns this buffer.
+    unsafe { v.with_alloc(&alloc) }.reserve(32);
+    assert_eq!(v.len(), 0);
+    assert!(v.capacity() >= 32);
+    // SAFETY: `&alloc` owns this buffer, and it holds no elements.
+    unsafe { v.deallocate(&&alloc) };
+    alloc.assert_balanced();
+}
+
+#[test]
+fn deallocate_buffer_after_growth_and_pop() {
+    let alloc = CountingAllocator::new();
+    let mut v = UnmanagedVec::<u32, _>::new(&alloc);
+    {
+        // SAFETY: `&alloc` owns this buffer.
+        let mut g = unsafe { v.with_alloc(&alloc) };
+        for i in 0..64u32 {
+            g.push(i);
+        }
+        while g.pop().is_some() {}
+    }
+    assert_eq!(v.len(), 0);
+    assert!(v.capacity() >= 64);
+    // SAFETY: `&alloc` owns `v`, and every element was popped.
+    unsafe { v.deallocate_buffer(&&alloc) };
+    alloc.assert_balanced();
+}
+
+#[test]
+fn unchecked_valid_utf8_grows_through_with_alloc() {
+    let alloc = CountingAllocator::new();
+    let mut raw = UnmanagedVec::<u8, _>::new(&alloc);
+    // SAFETY: `&alloc` owns this buffer.
+    unsafe { raw.with_alloc(&alloc) }.extend_from_slice(b"hello");
+    assert!(::core::str::from_utf8(&raw).is_ok());
+    // SAFETY: `raw` is valid UTF-8, checked above.
+    let mut text = unsafe { UnmanagedString::from_utf8_unchecked(raw) };
+    assert_eq!(&*text, "hello");
+    {
+        // SAFETY: `&alloc` owns this buffer, and the bytes stay valid UTF-8.
+        let mut g = unsafe { text.with_alloc(&alloc) };
+        g.push_str(", world");
+        g.push('!');
+    }
+    assert_eq!(&*text, "hello, world!");
+    // SAFETY: `&alloc` owns this buffer.
+    unsafe { text.deallocate(&&alloc) };
+
+    let mut owned_raw = ::allocator_api2::vec::Vec::<u8, _>::new_in(&alloc);
+    owned_raw.extend_from_slice(b"ok");
+    assert!(::core::str::from_utf8(&owned_raw).is_ok());
+    // SAFETY: `owned_raw` is valid UTF-8, checked above.
+    let owned = unsafe { String::from_utf8_unchecked(owned_raw) };
+    assert_eq!(owned.as_str(), "ok");
+    let transferred = UnmanagedString::from_string(owned);
+    // SAFETY: `&alloc` owns the buffer transferred out of `owned`.
+    unsafe { transferred.deallocate(&&alloc) };
+    alloc.assert_balanced();
+}
+
+#[test]
+// The popped string panics inside `Drop` and never reaches `deallocate()`.
+#[cfg_attr(miri, ignore = "implicit Drop panics before the buffer is freed")]
 #[should_panic(expected = "must be released via `deallocate`")]
 fn popped_unmanaged_value_still_panics_on_drop() {
     let alloc = CountingAllocator::new();
