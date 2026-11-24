@@ -585,6 +585,13 @@ mod tests {
         unsafe { v.with_alloc(Global) }.push(1);
     }
 
+    /// Empty vec did not allocate, so Miri can see the Drop panic without a leak.
+    #[test]
+    #[should_panic(expected = "must be released via `deallocate`")]
+    fn empty_implicit_drop_panics() {
+        let _v = UnmanagedVec::<u32, Global>::new(Global);
+    }
+
     /// `Vec::clear` drops elements; unmanaged `T` panics on that path (rustdoc / AGENTS.md).
     ///
     /// The outer vec is leaked so unwind does not hit a second `Drop` panic
