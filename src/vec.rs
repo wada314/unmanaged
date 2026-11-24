@@ -585,6 +585,67 @@ mod tests {
         unsafe { v.with_alloc(Global) }.push(1);
     }
 
+    /// `Vec::clear` drops elements; unmanaged `T` panics on that path (rustdoc / AGENTS.md).
+    ///
+    /// The outer vec is leaked so unwind does not hit a second `Drop` panic
+    /// (which would abort the process).
+    #[test]
+    #[cfg_attr(miri, ignore = "implicit Drop panics before the buffer is freed")]
+    #[should_panic(expected = "must be released via `deallocate`")]
+    fn guard_clear_with_unmanaged_element_panics() {
+        use crate::string::String as AString;
+        use crate::UnmanagedString;
+        use ::alloc::boxed::Box;
+
+        let v = Box::leak(Box::new(
+            UnmanagedVec::<UnmanagedString<Global>, Global>::new(Global),
+        ));
+        // SAFETY: leaked vec is never dropped; `Global` owns the buffer for the guard.
+        let mut g = unsafe { v.with_alloc(Global) };
+        g.push(UnmanagedString::from_string(AString::from_str_in(
+            "a", Global,
+        )));
+        g.clear();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "implicit Drop panics before the buffer is freed")]
+    #[should_panic(expected = "must be released via `deallocate`")]
+    fn guard_truncate_with_unmanaged_element_panics() {
+        use crate::string::String as AString;
+        use crate::UnmanagedString;
+        use ::alloc::boxed::Box;
+
+        let v = Box::leak(Box::new(
+            UnmanagedVec::<UnmanagedString<Global>, Global>::new(Global),
+        ));
+        // SAFETY: leaked vec is never dropped; `Global` owns the buffer for the guard.
+        let mut g = unsafe { v.with_alloc(Global) };
+        g.push(UnmanagedString::from_string(AString::from_str_in(
+            "a", Global,
+        )));
+        g.truncate(0);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "implicit Drop panics before the buffer is freed")]
+    #[should_panic(expected = "must be released via `deallocate`")]
+    fn guard_drain_with_unmanaged_element_panics() {
+        use crate::string::String as AString;
+        use crate::UnmanagedString;
+        use ::alloc::boxed::Box;
+
+        let v = Box::leak(Box::new(
+            UnmanagedVec::<UnmanagedString<Global>, Global>::new(Global),
+        ));
+        // SAFETY: leaked vec is never dropped; `Global` owns the buffer for the guard.
+        let mut g = unsafe { v.with_alloc(Global) };
+        g.push(UnmanagedString::from_string(AString::from_str_in(
+            "a", Global,
+        )));
+        for _ in g.drain(..) {}
+    }
+
     #[test]
     fn send_sync_when_element_is() {
         fn assert_send_sync<T: Send + Sync>() {}
