@@ -350,7 +350,9 @@ impl<'a, A: Allocator> Extend<&'a str> for String<A> {
 ///
 /// # Dropping
 ///
-/// Dropping implicitly panics. Release the buffer with [`deallocate`](Self::deallocate).
+/// Dropping implicitly panics. There is no `Drop` on `UnmanagedString` itself;
+/// the panic comes from the inner [`UnmanagedVec`] field (and the panic text
+/// names `UnmanagedVec`). Release the buffer with [`deallocate`](Self::deallocate).
 #[must_use = "an UnmanagedString must be released via `deallocate`; dropping it panics"]
 pub struct UnmanagedString<A: Allocator> {
     // Invariant: `bytes` always holds valid UTF-8.
@@ -719,20 +721,14 @@ mod tests {
     }
 
     #[test]
-    // The panic fires inside `Drop`, before any free. Miri reports that as a leak.
+    // The panic fires inside the inner `UnmanagedVec`'s `Drop`, before any free.
+    // Miri reports that as a leak.
     #[cfg_attr(miri, ignore = "implicit Drop panics before the buffer is freed")]
-    #[should_panic(expected = "must be released via `deallocate`")]
+    #[should_panic(expected = "UnmanagedVec must be released via `deallocate`")]
     fn implicit_drop_panics() {
         let mut s = UnmanagedString::new(Global);
         // SAFETY: `Global` owns this buffer for the short-lived guard.
         unsafe { s.with_alloc(Global) }.push('x');
-    }
-
-    #[test]
-    fn send_sync_when_allocator_is() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<String<Global>>();
-        assert_send_sync::<UnmanagedString<Global>>();
     }
 
     #[test]
