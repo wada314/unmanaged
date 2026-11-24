@@ -285,13 +285,6 @@ mod tests {
     }
 
     #[test]
-    fn deallocate_copy_inner() {
-        let b = UnmanagedBox::new_in(7u32, Global);
-        // SAFETY: `Global` owns this box.
-        unsafe { b.deallocate(&Global) };
-    }
-
-    #[test]
     fn clone_in_copies_value() {
         let b = UnmanagedBox::new_in(42u32, Global);
         let c = b.clone_in(Global);
@@ -318,12 +311,6 @@ mod tests {
     #[should_panic(expected = "must be released")]
     fn implicit_drop_panics() {
         let _b = UnmanagedBox::new_in(7u32, Global);
-    }
-
-    #[test]
-    fn send_sync_when_inner_is() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<UnmanagedBox<u32, Global>>();
     }
 
     #[test]

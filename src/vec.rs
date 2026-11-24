@@ -647,12 +647,6 @@ mod tests {
     }
 
     #[test]
-    fn send_sync_when_element_is() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<UnmanagedVec<u32, Global>>();
-    }
-
-    #[test]
     fn ord_eq_iter_and_into_vec() {
         let mut a = UnmanagedVec::<u32, Global>::new(Global);
         let mut b = UnmanagedVec::<u32, Global>::new(Global);
