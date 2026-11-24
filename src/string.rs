@@ -731,6 +731,13 @@ mod tests {
         unsafe { s.with_alloc(Global) }.push('x');
     }
 
+    /// Empty string did not allocate; Miri can observe the field Drop panic.
+    #[test]
+    #[should_panic(expected = "UnmanagedVec must be released via `deallocate`")]
+    fn empty_implicit_drop_panics() {
+        let _s = UnmanagedString::<Global>::new(Global);
+    }
+
     #[test]
     fn owned_string_matches_std_traits() {
         use ::core::fmt::Write;

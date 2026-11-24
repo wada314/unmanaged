@@ -9,6 +9,7 @@ use ::allocator_api2::alloc::Global;
 use ::core::alloc::Layout;
 use ::core::cell::Cell;
 use ::core::ptr::NonNull;
+use ::unmanaged::DeallocateIn;
 use ::unmanaged::DefaultIn;
 use ::unmanaged::String;
 use ::unmanaged::UnmanagedBox;
@@ -217,6 +218,54 @@ fn unchecked_valid_utf8_grows_through_with_alloc() {
     let transferred = UnmanagedString::from_string(owned);
     // SAFETY: `&alloc` owns the buffer transferred out of `owned`.
     unsafe { transferred.deallocate(&&alloc) };
+    alloc.assert_balanced();
+}
+
+#[test]
+fn default_in_vec_and_box_balance() {
+    let alloc = CountingAllocator::new();
+
+    let empty_vec = UnmanagedVec::<u32, _>::default_in(&alloc);
+    assert!(empty_vec.is_empty());
+    // SAFETY: `default_in` used `&alloc` and did not allocate for an empty vec.
+    unsafe { empty_vec.deallocate(&&alloc) };
+    assert_eq!(alloc.allocations.get(), 0);
+
+    let boxed = UnmanagedBox::<u32, _>::default_in(&alloc);
+    assert_eq!(*boxed, 0);
+    // SAFETY: box was allocated through `&alloc`.
+    unsafe { boxed.deallocate(&&alloc) };
+    alloc.assert_balanced();
+}
+
+#[test]
+fn clone_in_to_a_different_allocator_instance() {
+    let alloc_a = CountingAllocator::new();
+    let alloc_b = CountingAllocator::new();
+
+    let mut src = UnmanagedVec::<u32, _>::new(&alloc_a);
+    {
+        // SAFETY: `&alloc_a` owns `src`.
+        let mut g = unsafe { src.with_alloc(&alloc_a) };
+        g.extend([1, 2, 3]);
+    }
+    let dst = src.clone_in(&alloc_b);
+    assert_eq!(&dst[..], &[1, 2, 3]);
+
+    // SAFETY: each vec is freed through the allocator that owns its buffer.
+    unsafe { src.deallocate(&&alloc_a) };
+    // SAFETY: `dst` was `clone_in`'d into `&alloc_b`.
+    unsafe { dst.deallocate(&&alloc_b) };
+    alloc_a.assert_balanced();
+    alloc_b.assert_balanced();
+}
+
+#[test]
+fn deallocate_in_trait_frees_box() {
+    let alloc = CountingAllocator::new();
+    let boxed = UnmanagedBox::new_in(7u32, &alloc);
+    // SAFETY: `&alloc` owns the box; trait path must free the same way.
+    unsafe { DeallocateIn::deallocate_in(boxed, &&alloc) };
     alloc.assert_balanced();
 }
 
